@@ -1,0 +1,32 @@
+# Pre-commit hooks for autoware-index-github-actions.
+#
+# One-time setup:
+#   pip install --user pre-commit   # or: pipx install pre-commit
+#
+# Manual run across the whole repo:
+#   pre-commit run --all-files
+#
+# Refresh hook versions:
+#   pre-commit autoupdate
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
