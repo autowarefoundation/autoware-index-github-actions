@@ -1,0 +1,131 @@
+name: validate-package
+
+# Reusable workflow that builds and tests a ROS 2 package against a
+# version-pinned Autoware Core container image.
+#
+# Two calling patterns:
+#   1. Producer mode  - called from a community package's own CI, no
+#      package_repository input; the calling repo is checked out.
+#   2. Sweep mode     - called from the autoware-index registry's sweep
+#      workflows, with package_repository and package_ref set; the package
+#      is cloned explicitly so we test the exact ref the registry records.
+#
+# Container pin:
+#   ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
+#
+# If the requested image tag does not exist, the container pull fails with
+# "manifest unknown" - that is the intended failure signal. The registry's
+# tag poller is the gatekeeper that only registers an autoware_version after
+# the corresponding image has been published.
+
+on:
+  workflow_call:
+    inputs:
+      ros_distro:
+        description: 'ROS 2 distribution (e.g. "jazzy").'
+        required: true
+        type: string
+      autoware_version:
+        description: 'Autoware Core SemVer (e.g. "1.8.0"). Drives the container tag.'
+        required: true
+        type: string
+      package_name:
+        description: 'ROS package name; passed to colcon --packages-up-to.'
+        required: true
+        type: string
+      package_repository:
+        description: |
+          Git URL to clone. Empty (default) = producer mode: the calling repo
+          is checked out via actions/checkout. Set = sweep mode: clone the URL
+          and check out package_ref.
+        required: false
+        type: string
+        default: ""
+      package_ref:
+        description: |
+          Tag, branch, or SHA to check out. Only used when package_repository
+          is set. Empty (default) leaves the cloned repo at its default branch.
+        required: false
+        type: string
+        default: ""
+      base_image_stage:
+        description: 'Container image stage. Defaults to core-devel.'
+        required: false
+        type: string
+        default: core-devel
+      build_depends_repos:
+        description: |
+          Path inside the package to a .repos file listing extra build deps
+          beyond what the base image provides. Forwarded to colcon-build and
+          colcon-test; ignored gracefully if the file is absent.
+        required: false
+        type: string
+        default: build_depends.repos
+      runs-on:
+        description: |
+          Runner label as a JSON-encoded array (workaround for the lack of
+          array inputs in workflow_call). Default: '["ubuntu-24.04"]'.
+        required: false
+        type: string
+        default: '["ubuntu-24.04"]'
+
+    outputs:
+      resolved_sha:
+        description: The exact commit SHA that was checked out and built.
+        value: ${{ jobs.validate.outputs.resolved_sha }}
+
+jobs:
+  validate:
+    name: build+test (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
+    runs-on: ${{ fromJson(inputs.runs-on) }}
+    container:
+      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+    outputs:
+      resolved_sha: ${{ steps.resolve.outputs.sha }}
+    env:
+      CC: /usr/lib/ccache/gcc
+      CXX: /usr/lib/ccache/g++
+    steps:
+      - name: Check out calling repository (producer mode)
+        if: inputs.package_repository == ''
+        uses: actions/checkout@v4
+
+      - name: Clone external package (sweep mode)
+        if: inputs.package_repository != ''
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          git clone "${{ inputs.package_repository }}" .
+          if [ -n "${{ inputs.package_ref }}" ]; then
+            git checkout "${{ inputs.package_ref }}"
+          fi
+
+      - name: Resolve commit SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Remove exec_depend
+        uses: autowarefoundation/autoware-github-actions/remove-exec-depend@v1
+
+      - name: Get self packages
+        id: self
+        uses: autowarefoundation/autoware-github-actions/get-self-packages@v1
+
+      - name: Build
+        if: steps.self.outputs.self-packages != ''
+        uses: autowarefoundation/autoware-github-actions/colcon-build@v1
+        with:
+          rosdistro: ${{ inputs.ros_distro }}
+          target-packages: ${{ inputs.package_name }}
+          build-depends-repos: ${{ inputs.build_depends_repos }}
+
+      - name: Test
+        if: steps.self.outputs.self-packages != ''
+        uses: autowarefoundation/autoware-github-actions/colcon-test@v1
+        with:
+          rosdistro: ${{ inputs.ros_distro }}
+          target-packages: ${{ inputs.package_name }}
+          build-depends-repos: ${{ inputs.build_depends_repos }}
