@@ -115,6 +115,7 @@ jobs:
         uses: autowarefoundation/autoware-github-actions/get-self-packages@v1
 
       - name: Build
+        id: build
         if: steps.self.outputs.self-packages != ''
         uses: autowarefoundation/autoware-github-actions/colcon-build@v1
         with:
@@ -123,9 +124,37 @@ jobs:
           build-depends-repos: ${{ inputs.build_depends_repos }}
 
       - name: Test
+        id: test
         if: steps.self.outputs.self-packages != ''
         uses: autowarefoundation/autoware-github-actions/colcon-test@v1
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
           build-depends-repos: ${{ inputs.build_depends_repos }}
+
+      # Result artifact published for callers that aggregate sweep results
+      # (e.g. autoware-index sweep workflows). `if: always()` so failures
+      # are reported, not silently dropped.
+      - name: Compose result
+        if: always()
+        run: |
+          cat > result.json <<EOF
+          {
+            "ros_distro": "${{ inputs.ros_distro }}",
+            "autoware_version": "${{ inputs.autoware_version }}",
+            "package_name": "${{ inputs.package_name }}",
+            "package_repository": "${{ inputs.package_repository }}",
+            "package_ref": "${{ inputs.package_ref }}",
+            "resolved_sha": "${{ steps.resolve.outputs.sha }}",
+            "build_outcome": "${{ steps.build.outcome }}",
+            "test_outcome": "${{ steps.test.outcome }}"
+          }
+          EOF
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-result-${{ inputs.ros_distro }}-${{ inputs.package_name }}-${{ inputs.autoware_version }}
+          path: result.json
+          if-no-files-found: error
