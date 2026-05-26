@@ -85,6 +85,7 @@ concurrency:
 env:
   CC: /usr/lib/ccache/gcc
   CXX: /usr/lib/ccache/g++
+  CCACHE_DIR: /root/.ccache
 
 jobs:
   build-and-test:
@@ -108,11 +109,9 @@ jobs:
 
       - name: Prepare ccache dir
         run: |
-          if [ -z "${CCACHE_DIR:-}" ]; then
+          if ! command -v ccache >/dev/null; then
             apt-get update
             apt-get install -y ccache
-            export CCACHE_DIR=/root/.ccache
-            echo "CCACHE_DIR=${CCACHE_DIR}" >> "${GITHUB_ENV}"
           fi
           mkdir -p "${CCACHE_DIR}"
           du -sh "${CCACHE_DIR}" && ccache -s
@@ -120,9 +119,9 @@ jobs:
 
       - name: Restore ccache
         if: ${{ inputs.pull-ccache == true }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
-          path: /root/.ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
           restore-keys: |
             ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-
@@ -151,9 +150,9 @@ jobs:
 
       - name: Save ccache
         if: ${{ inputs.push-ccache == true }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
-          path: /root/.ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
 
       - name: Test
