@@ -142,6 +142,7 @@ jobs:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
           cache-key-element: validate-package-${{ inputs.cache-key-element }}
+          underlay-workspace: /opt/autoware
 
       - name: ccache stats after build
         if: ${{ always() }}
@@ -161,6 +162,7 @@ jobs:
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
+          underlay-workspace: /opt/autoware
 
   clang-tidy:
     name: clang-tidy (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
@@ -188,3 +190,4 @@ jobs:
           clang-tidy-config-url: ${{ inputs.clang_tidy_config_url }}
           cache-key-element: validate-package-${{ inputs.cache-key-element }}
           artifact-name: clang-tidy-result-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+          underlay-workspace: /opt/autoware

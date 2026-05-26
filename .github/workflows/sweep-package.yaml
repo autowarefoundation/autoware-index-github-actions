@@ -103,6 +103,7 @@ jobs:
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
+          underlay-workspace: /opt/autoware
 
       - name: Test
         id: test
@@ -111,6 +112,7 @@ jobs:
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
+          underlay-workspace: /opt/autoware
 
       - name: Compose result
         if: always()
