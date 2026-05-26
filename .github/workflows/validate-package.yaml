@@ -1,21 +1,23 @@
 name: validate-package
 
-# Reusable workflow that builds and tests a ROS 2 package against a
-# version-pinned Autoware Core container image.
+# Reusable workflow that builds, tests, and clang-tidies a ROS 2 package
+# against a version-pinned Autoware Core container image, called from
+# the package's own CI ("producer mode").
 #
-# Two calling patterns:
-#   1. Producer mode  - called from a community package's own CI, no
-#      package_repository input; the calling repo is checked out.
-#   2. Sweep mode     - called from the autoware-index registry's sweep
-#      workflows, with package_repository and package_ref set; the package
-#      is cloned explicitly so we test the exact ref the registry records.
+# The calling repository is checked out via actions/checkout. For the
+# sweep-side counterpart that clones an external repo at a pinned ref,
+# see sweep-package.yaml.
 #
 # Container pin:
 #   ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
 #
-# If the requested image tag does not exist, the container pull fails with
-# "manifest unknown" - that is the intended failure signal. The registry's
-# tag poller is the gatekeeper that only registers an autoware_version after
+# Registered packages must not ship a build_depends.repos: the pinned
+# image already contains the matching Autoware Core build, so this
+# workflow intentionally does not expose a build_depends_repos input.
+#
+# If the requested image tag does not exist, the container pull fails
+# with "manifest unknown" - that is the intended failure signal. The
+# autoware-index tag poller only registers an autoware_version after
 # the corresponding image has been published.
 
 on:
@@ -33,79 +35,69 @@ on:
         description: 'ROS package name; passed to colcon --packages-up-to.'
         required: true
         type: string
-      package_repository:
-        description: |
-          Git URL to clone. Empty (default) = producer mode: the calling repo
-          is checked out via actions/checkout. Set = sweep mode: clone the URL
-          and check out package_ref.
-        required: false
-        type: string
-        default: ""
-      package_ref:
-        description: |
-          Tag, branch, or SHA to check out. Only used when package_repository
-          is set. Empty (default) leaves the cloned repo at its default branch.
-        required: false
-        type: string
-        default: ""
       base_image_stage:
         description: 'Container image stage. Defaults to core-devel.'
         required: false
         type: string
         default: core-devel
-      build_depends_repos:
-        description: |
-          Path inside the package to a .repos file listing extra build deps
-          beyond what the base image provides. Forwarded to colcon-build and
-          colcon-test; ignored gracefully if the file is absent.
-        required: false
-        type: string
-        default: build_depends.repos
       runs-on:
         description: |
-          Runner label as a JSON-encoded array (workaround for the lack of
-          array inputs in workflow_call). Default: '["ubuntu-24.04"]'.
+          Runner label as a JSON-encoded array (workaround for the lack
+          of array inputs in workflow_call). Default: '["ubuntu-24.04"]'.
         required: false
         type: string
         default: '["ubuntu-24.04"]'
+      pull-ccache:
+        description: 'Restore ccache from GHA cache before build.'
+        required: false
+        type: boolean
+        default: true
+      push-ccache:
+        description: 'Save ccache to GHA cache after build.'
+        required: false
+        type: boolean
+        default: false
+      cache-key-element:
+        description: 'Extra discriminator baked into the ccache key.'
+        required: false
+        type: string
+        default: default
+      concurrency-group:
+        description: 'Concurrency group for this workflow_call invocation.'
+        required: false
+        type: string
+        default: ${{ github.workflow }}-${{ github.ref }}-${{ github.run_id }}
+      cancel-in-progress:
+        description: 'Whether to cancel in-progress runs in the group.'
+        required: false
+        type: boolean
+        default: false
+      clang_tidy_config_url:
+        description: 'URL of the .clang-tidy config used by the clang-tidy job.'
+        required: false
+        type: string
+        default: https://raw.githubusercontent.com/autowarefoundation/autoware/main/.clang-tidy-ci
 
-    outputs:
-      resolved_sha:
-        description: The exact commit SHA that was checked out and built.
-        value: ${{ jobs.validate.outputs.resolved_sha }}
+concurrency:
+  group: ${{ inputs.concurrency-group }}
+  cancel-in-progress: ${{ inputs.cancel-in-progress }}
+
+env:
+  CC: /usr/lib/ccache/gcc
+  CXX: /usr/lib/ccache/g++
 
 jobs:
-  validate:
+  build-and-test:
     name: build+test (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
       image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
-    outputs:
-      resolved_sha: ${{ steps.resolve.outputs.sha }}
-    env:
-      CC: /usr/lib/ccache/gcc
-      CXX: /usr/lib/ccache/g++
     steps:
-      - name: Check out calling repository (producer mode)
-        if: inputs.package_repository == ''
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Clone external package (sweep mode)
-        if: inputs.package_repository != ''
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE}"
-          git clone "${{ inputs.package_repository }}" .
-          if [ -n "${{ inputs.package_ref }}" ]; then
-            git checkout "${{ inputs.package_ref }}"
-          fi
-
-      - name: Resolve commit SHA
-        id: resolve
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE}"
-          echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+      - name: Show machine specs
+        run: lscpu && free -h && df -h
 
       - name: Remove exec_depend
         uses: autowarefoundation/autoware-github-actions/remove-exec-depend@v1
@@ -114,47 +106,85 @@ jobs:
         id: self
         uses: autowarefoundation/autoware-github-actions/get-self-packages@v1
 
+      - name: Prepare ccache dir
+        run: |
+          if [ -z "${CCACHE_DIR:-}" ]; then
+            apt-get update
+            apt-get install -y ccache
+            export CCACHE_DIR=/root/.ccache
+            echo "CCACHE_DIR=${CCACHE_DIR}" >> "${GITHUB_ENV}"
+          fi
+          mkdir -p "${CCACHE_DIR}"
+          du -sh "${CCACHE_DIR}" && ccache -s
+        shell: bash
+
+      - name: Restore ccache
+        if: ${{ inputs.pull-ccache == true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: /root/.ccache
+          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
+          restore-keys: |
+            ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-
+            ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-
+
+      - name: Limit ccache size
+        run: |
+          rm -f "${CCACHE_DIR}/ccache.conf"
+          printf '# Set maximum cache size\nmax_size = 900MB\n' >> "${CCACHE_DIR}/ccache.conf"
+          ccache --zero-stats
+        shell: bash
+
       - name: Build
-        id: build
-        if: steps.self.outputs.self-packages != ''
+        if: ${{ steps.self.outputs.self-packages != '' }}
         uses: autowarefoundation/autoware-github-actions/colcon-build@v1
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
-          build-depends-repos: ${{ inputs.build_depends_repos }}
+          cache-key-element: validate-package-${{ inputs.cache-key-element }}
+
+      - name: ccache stats after build
+        if: ${{ always() }}
+        run: du -sh "${CCACHE_DIR}" && ccache -s
+        shell: bash
+
+      - name: Save ccache
+        if: ${{ inputs.push-ccache == true }}
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.ccache
+          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
 
       - name: Test
-        id: test
-        if: steps.self.outputs.self-packages != ''
+        if: ${{ steps.self.outputs.self-packages != '' }}
         uses: autowarefoundation/autoware-github-actions/colcon-test@v1
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
-          build-depends-repos: ${{ inputs.build_depends_repos }}
 
-      # Result artifact published for callers that aggregate sweep results
-      # (e.g. autoware-index sweep workflows). `if: always()` so failures
-      # are reported, not silently dropped.
-      - name: Compose result
-        if: always()
-        run: |
-          cat > result.json <<EOF
-          {
-            "ros_distro": "${{ inputs.ros_distro }}",
-            "autoware_version": "${{ inputs.autoware_version }}",
-            "package_name": "${{ inputs.package_name }}",
-            "package_repository": "${{ inputs.package_repository }}",
-            "package_ref": "${{ inputs.package_ref }}",
-            "resolved_sha": "${{ steps.resolve.outputs.sha }}",
-            "build_outcome": "${{ steps.build.outcome }}",
-            "test_outcome": "${{ steps.test.outcome }}"
-          }
-          EOF
+  clang-tidy:
+    name: clang-tidy (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
+    needs: build-and-test
+    runs-on: ${{ fromJson(inputs.runs-on) }}
+    container:
+      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Upload result
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Remove exec_depend
+        uses: autowarefoundation/autoware-github-actions/remove-exec-depend@v1
+
+      - name: Get self packages
+        id: self
+        uses: autowarefoundation/autoware-github-actions/get-self-packages@v1
+
+      - name: Run clang-tidy
+        if: ${{ steps.self.outputs.self-packages != '' }}
+        uses: autowarefoundation/autoware-github-actions/clang-tidy@v1
         with:
-          name: validate-result-${{ inputs.ros_distro }}-${{ inputs.package_name }}-${{ inputs.autoware_version }}
-          path: result.json
-          if-no-files-found: error
+          rosdistro: ${{ inputs.ros_distro }}
+          target-packages: ${{ inputs.package_name }}
+          clang-tidy-config-url: ${{ inputs.clang_tidy_config_url }}
+          cache-key-element: validate-package-${{ inputs.cache-key-element }}
+          artifact-name: clang-tidy-result-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
