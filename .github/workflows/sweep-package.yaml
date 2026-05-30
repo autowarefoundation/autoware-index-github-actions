@@ -10,13 +10,18 @@ name: sweep-package
 #   - Explicit external clone + checkout at package_ref (no
 #     actions/checkout of the caller).
 #   - No ccache, no clang-tidy: sweep runs are batch validation across
-#     many (package x autoware_version) pairs and only record build/test
-#     pass/fail in the history envelope.
+#     many changed packages and only record build/test pass/fail in the
+#     history envelope.
 #   - Uploads result.json as a per-matrix-row artifact for the recorder
 #     (scripts/build_envelopes.py in autoware-index consumes the
 #     "validate-result-*" pattern with filenames shaped
-#     "<distro>-<package>-<version>").
+#     "<distro>-<package>-<resolved_version>"); the recorder reads the
+#     resolved autoware_version out of result.json.
 #   - Exports resolved_sha so the recorder can pin the exact commit.
+#
+# autoware_version is optional. When unset (the default), the `resolve`
+# job picks the version at runtime so sweep callers do not have to thread
+# it through their matrix. See the autoware_version input docstring.
 #
 # Registered packages must not ship a build_depends.repos: the pinned
 # image already contains the matching Autoware Core build, so this
@@ -30,9 +35,16 @@ on:
         required: true
         type: string
       autoware_version:
-        description: 'Autoware Core SemVer (e.g. "1.8.0"). Drives the container tag.'
-        required: true
+        description: |
+          Autoware SemVer (e.g. "1.8.0"). Drives the container tag.
+          When empty (the default), the workflow falls back to the
+          latest-autoware-version composite action — the freshest
+          autoware release whose container image is already on GHCR.
+          See .github/actions/latest-autoware-version/action.yaml. The recorder
+          reads the resolved value from result.json.
+        required: false
         type: string
+        default: ''
       package_name:
         description: 'ROS package name; passed to colcon --packages-up-to.'
         required: true
@@ -64,11 +76,26 @@ on:
         value: ${{ jobs.validate.outputs.resolved_sha }}
 
 jobs:
+  resolve:
+    name: resolve autoware_version
+    runs-on: ubuntu-24.04
+    outputs:
+      autoware_version: ${{ inputs.autoware_version || steps.latest.outputs.autoware_version }}
+    steps:
+      - name: Resolve latest autoware_version
+        id: latest
+        if: inputs.autoware_version == ''
+        uses: autowarefoundation/autoware-index-github-actions/.github/actions/latest-autoware-version@main
+        with:
+          ros_distro: ${{ inputs.ros_distro }}
+          base_image_stage: ${{ inputs.base_image_stage }}
+
   validate:
-    name: sweep build+test (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }}, ${{ inputs.package_name }})
+    needs: resolve
+    name: sweep build+test (${{ inputs.ros_distro }}, autoware ${{ needs.resolve.outputs.autoware_version }}, ${{ inputs.package_name }})
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
-      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
     outputs:
       resolved_sha: ${{ steps.resolve.outputs.sha }}
     steps:
@@ -120,7 +147,7 @@ jobs:
           cat > result.json <<EOF
           {
             "ros_distro": "${{ inputs.ros_distro }}",
-            "autoware_version": "${{ inputs.autoware_version }}",
+            "autoware_version": "${{ needs.resolve.outputs.autoware_version }}",
             "package_name": "${{ inputs.package_name }}",
             "package_repository": "${{ inputs.package_repository }}",
             "package_ref": "${{ inputs.package_ref }}",
@@ -134,6 +161,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: validate-result-${{ inputs.ros_distro }}-${{ inputs.package_name }}-${{ inputs.autoware_version }}
+          name: validate-result-${{ inputs.ros_distro }}-${{ inputs.package_name }}-${{ needs.resolve.outputs.autoware_version }}
           path: result.json
           if-no-files-found: error

@@ -1,0 +1,69 @@
+name: Latest autoware_version
+description: |
+  Return the SemVer of the freshest autowarefoundation/autoware release
+  whose
+  `ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<version>`
+  container image is already published on GHCR.
+
+  Releases ship before images, so the newest release may not yet have
+  an image; the action walks releases newest-first and returns the
+  first SemVer with a pullable image. If none of the last `max_lookback`
+  releases have one, it fails loudly.
+
+inputs:
+  ros_distro:
+    description: 'ROS 2 distribution (e.g. "jazzy"). Used in the image tag.'
+    required: true
+  base_image_stage:
+    description: 'Container image stage (e.g. "core-devel"). Used in the existence probe.'
+    required: false
+    default: core-devel
+  max_lookback:
+    description: 'Max number of recent autoware releases to scan for a published image.'
+    required: false
+    default: '5'
+  github_token:
+    description: 'GitHub token used for the releases API (raises rate limit). Defaults to GITHUB_TOKEN.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  autoware_version:
+    description: 'Resolved Autoware SemVer (e.g. "1.8.0").'
+    value: ${{ steps.resolve.outputs.autoware_version }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        ROS_DISTRO: ${{ inputs.ros_distro }}
+        BASE_IMAGE_STAGE: ${{ inputs.base_image_stage }}
+        MAX_LOOKBACK: ${{ inputs.max_lookback }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        versions=$(curl -sSfL \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          "https://api.github.com/repos/autowarefoundation/autoware/releases?per_page=${MAX_LOOKBACK}" \
+          | python3 -c "import sys, json; [print(r['tag_name'].lstrip('v')) for r in json.load(sys.stdin) if not r.get('prerelease') and not r.get('draft')]")
+        if [ -z "${versions}" ]; then
+          echo "::error::could not list autowarefoundation/autoware releases"
+          exit 1
+        fi
+
+        for v in ${versions}; do
+          image="ghcr.io/autowarefoundation/autoware:${BASE_IMAGE_STAGE}-${ROS_DISTRO}-${v}"
+          if docker manifest inspect "${image}" >/dev/null 2>&1; then
+            echo "::notice::resolved autoware_version=${v} (image ${image} is published)"
+            echo "autoware_version=${v}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "::warning::skipping autoware ${v}: image not yet published (${image})"
+        done
+
+        echo "::error::no autoware release in the last ${MAX_LOOKBACK} has a published ${BASE_IMAGE_STAGE}-${ROS_DISTRO}-* image"
+        exit 1

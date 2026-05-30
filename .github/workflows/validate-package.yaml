@@ -11,14 +11,16 @@ name: validate-package
 # Container pin:
 #   ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
 #
+# autoware_version is optional. When unset (the default), the `resolve`
+# job picks the version at runtime so caller CIs do not have to bump on
+# every Autoware release. See the autoware_version input docstring.
+#
 # Registered packages must not ship a build_depends.repos: the pinned
 # image already contains the matching Autoware Core build, so this
 # workflow intentionally does not expose a build_depends_repos input.
 #
-# If the requested image tag does not exist, the container pull fails
-# with "manifest unknown" - that is the intended failure signal. The
-# autoware-index tag poller only registers an autoware_version after
-# the corresponding image has been published.
+# If the resolved image tag does not exist on GHCR, the container pull
+# fails with "manifest unknown" - that is the intended failure signal.
 
 on:
   workflow_call:
@@ -28,9 +30,15 @@ on:
         required: true
         type: string
       autoware_version:
-        description: 'Autoware Core SemVer (e.g. "1.8.0"). Drives the container tag.'
-        required: true
+        description: |
+          Autoware SemVer (e.g. "1.8.0"). Drives the container tag.
+          When empty (the default), the workflow falls back to the
+          latest-autoware-version composite action — the freshest
+          autoware release whose container image is already on GHCR.
+          See .github/actions/latest-autoware-version/action.yaml.
+        required: false
         type: string
+        default: ''
       package_name:
         description: 'ROS package name; passed to colcon --packages-up-to.'
         required: true
@@ -88,11 +96,26 @@ env:
   CCACHE_DIR: /root/.ccache
 
 jobs:
+  resolve:
+    name: resolve autoware_version
+    runs-on: ubuntu-24.04
+    outputs:
+      autoware_version: ${{ inputs.autoware_version || steps.latest.outputs.autoware_version }}
+    steps:
+      - name: Resolve latest autoware_version
+        id: latest
+        if: inputs.autoware_version == ''
+        uses: autowarefoundation/autoware-index-github-actions/.github/actions/latest-autoware-version@main
+        with:
+          ros_distro: ${{ inputs.ros_distro }}
+          base_image_stage: ${{ inputs.base_image_stage }}
+
   build-and-test:
-    name: build+test (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
+    needs: resolve
+    name: build+test (${{ inputs.ros_distro }}, autoware ${{ needs.resolve.outputs.autoware_version }})
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
-      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -122,9 +145,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
+          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}-${{ github.sha }}
           restore-keys: |
-            ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-
+            ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}-
             ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-
 
       - name: Limit ccache size
@@ -153,7 +176,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}-${{ github.sha }}
+          key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}-${{ github.sha }}
 
       - name: Test
         if: ${{ steps.self.outputs.self-packages != '' }}
@@ -164,11 +187,11 @@ jobs:
           underlay-workspace: /opt/autoware
 
   clang-tidy:
-    name: clang-tidy (${{ inputs.ros_distro }}, autoware ${{ inputs.autoware_version }})
-    needs: build-and-test
+    name: clang-tidy (${{ inputs.ros_distro }}, autoware ${{ needs.resolve.outputs.autoware_version }})
+    needs: [resolve, build-and-test]
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
-      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -188,5 +211,5 @@ jobs:
           target-packages: ${{ inputs.package_name }}
           clang-tidy-config-url: ${{ inputs.clang_tidy_config_url }}
           cache-key-element: validate-package-${{ inputs.cache-key-element }}
-          artifact-name: clang-tidy-result-${{ inputs.ros_distro }}-${{ inputs.autoware_version }}
+          artifact-name: clang-tidy-result-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
           underlay-workspace: /opt/autoware
