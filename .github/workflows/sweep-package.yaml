@@ -103,6 +103,7 @@ jobs:
         env:
           PACKAGE_REPOSITORY: ${{ inputs.package_repository }}
           PACKAGE_REF: ${{ inputs.package_ref }}
+        shell: bash
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}"
@@ -111,6 +112,7 @@ jobs:
 
       - name: Resolve commit SHA
         id: resolve
+        shell: bash
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}"
