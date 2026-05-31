@@ -107,6 +107,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}"
+          # The container runs as a different user than owns the mounted
+          # workspace, so git refuses operations here ("dubious ownership").
+          # Mark it safe before later git-based steps (e.g. get-self-packages).
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git clone "${PACKAGE_REPOSITORY}" .
           git checkout "${PACKAGE_REF}"
 
