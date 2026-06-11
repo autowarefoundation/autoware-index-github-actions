@@ -8,7 +8,7 @@ Three reusable workflows ship here:
 - **`sweep-repository.yaml`** — *repository sweep mode.* The autoware-index registry's sweep workflows call it with one row per (distro, repository) to validate "every registered package of repository R at ref V still builds against the current latest Autoware Core release." Clones the repository once, builds the union of its registered packages once, derives an honest per-package verdict (own dependency closure for build, own tests only via `--packages-select`), uploads one result artifact per repository for the registry's recorder, and exports `resolved_sha`.
 - **`sweep-package.yaml`** — *legacy per-package sweep mode.* Superseded by `sweep-repository.yaml`; kept only until the registry's schema-v2 cutover merges, then removed.
 
-Both pin the container to:
+All of them pin the container to:
 
 ```
 ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
@@ -16,7 +16,7 @@ ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_ve
 
 `autoware_version` is **optional**. When unset (the default), a `resolve` job invokes the [`latest-autoware-version`](#latest-autoware-version) composite action so callers don't have to bump CI per release. If a caller already knows the version (e.g. a release branch validating against a specific Autoware), passing `autoware_version: "1.8.0"` explicitly skips the action entirely.
 
-Registered packages must **not** ship a `build_depends.repos` — the pinned image already contains the matching Autoware Core build, so neither workflow exposes a `build_depends_repos` input.
+Registered packages must **not** ship a `build_depends.repos` — the pinned image already contains the matching Autoware Core build, so none of the workflows exposes a `build_depends_repos` input.
 
 ## Usage
 
@@ -130,7 +130,7 @@ Superseded by `sweep-repository.yaml` — one row per package meant a monorepo w
 
 `.github/actions/latest-autoware-version/action.yaml` returns the SemVer of the freshest [`autowarefoundation/autoware`](https://github.com/autowarefoundation/autoware/releases) release whose `ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<version>` image is already published on GHCR. Releases ship before images, so the action walks releases newest-first and returns the first SemVer with a pullable image — sliding past the release-vs-image gap.
 
-Both reusables invoke it in their `resolve` job (skipping it entirely when the caller supplied an explicit `autoware_version`). You can also call it directly from your own workflow if you need the version for something else.
+Every reusable workflow invokes it in its `resolve` job (skipping it entirely when the caller supplied an explicit `autoware_version`). You can also call it directly from your own workflow if you need the version for something else.
 
 | Input | Required | Default | Meaning |
 |-------|----------|---------|---------|
@@ -159,6 +159,6 @@ The release-vs-image race is handled by `latest-autoware-version`'s walk (see ab
 
 ## Related repositories
 
-- [`autoware-index`](https://github.com/autowarefoundation/autoware-index) — the registry whose sweep workflows consume `sweep-package.yaml`.
+- [`autoware-index`](https://github.com/autowarefoundation/autoware-index) — the registry whose sweep workflows consume `sweep-repository.yaml`.
 - [`autoware-github-actions`](https://github.com/autowarefoundation/autoware-github-actions) — provides the composite actions this workflow chains (`remove-exec-depend`, `get-self-packages`, `colcon-build`, `colcon-test`, `clang-tidy`).
 - [`autowarefoundation/autoware`](https://github.com/autowarefoundation/autoware/tree/main/docker) — source of the container images.

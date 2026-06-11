@@ -73,9 +73,10 @@ on:
       concurrency-group:
         description: |
           Concurrency group for this workflow_call invocation. When empty
-          (the default), falls back to a per-(run, package) group so several
-          matrix legs of one caller run — e.g. a monorepo validating each of
-          its registered packages — never serialize or cancel each other.
+          (the default), falls back to a per-(run, distro, package) group so
+          the matrix legs of one caller run — e.g. a monorepo validating each
+          of its registered packages, possibly across several ROS distros —
+          never serialize or cancel each other.
         required: false
         type: string
         default: ''
@@ -91,7 +92,7 @@ on:
         default: https://raw.githubusercontent.com/autowarefoundation/autoware/main/.clang-tidy-ci
 
 concurrency:
-  group: ${{ inputs.concurrency-group || format('{0}-{1}-{2}-{3}', github.workflow, github.ref, github.run_id, inputs.package_name) }}
+  group: ${{ inputs.concurrency-group || format('{0}-{1}-{2}-{3}-{4}', github.workflow, github.ref, github.run_id, inputs.ros_distro, inputs.package_name) }}
   cancel-in-progress: ${{ inputs.cancel-in-progress }}
 
 env:

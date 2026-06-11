@@ -23,7 +23,7 @@ name: sweep-repository
 #   - test_outcome:   the package's OWN tests only (`colcon test
 #                     --packages-select <pkg> --return-code-on-test-failure`).
 #                     A sibling's tests never touch this package's verdict.
-#                     "skipped" when the build already failed.
+#                     null when the build already failed (tests never ran).
 #
 # Artifact contract (consumed by autoware-index scripts/build_envelopes.py —
 # don't rename the prefix or reshape result.json without bumping the recorder):
@@ -161,10 +161,17 @@ jobs:
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}"
           mkdir -p package-xmls
+          # Enumerate as a checked command (not a process substitution, whose
+          # failure would be silently swallowed and misreport every package
+          # as absent): a colcon error fails the step loudly instead.
+          colcon list --base-paths . > .colcon-list.txt
           declare -A pkg_path
           while IFS=$'\t' read -r name path _type; do
+            if [[ -n "${pkg_path[$name]:-}" ]]; then
+              echo "::warning::duplicate package name '${name}' in the tree (${pkg_path[$name]} and ${path}); colcon will refuse to build it"
+            fi
             pkg_path["$name"]="$path"
-          done < <(colcon list --base-paths .)
+          done < .colcon-list.txt
 
           present=()
           absent=()
@@ -194,8 +201,12 @@ jobs:
           ROS_DISTRO_INPUT: ${{ inputs.ros_distro }}
           PRESENT: ${{ steps.scan.outputs.present }}
         shell: bash
+        # No nounset here or in the build/verdict steps: colcon- and
+        # ament-generated setup.sh scripts reference unset variables
+        # (COLCON_TRACE, AMENT_PYTHON_EXECUTABLE, ...) and abort the shell
+        # under `set -u` the moment they are sourced.
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
           apt-get -yqq update
           rosdep update || echo "::warning::rosdep update failed; using the image's existing sources"
@@ -215,7 +226,7 @@ jobs:
           PRESENT: ${{ steps.scan.outputs.present }}
         shell: bash
         run: |
-          set -uo pipefail
+          set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
@@ -223,8 +234,12 @@ jobs:
           fi
           # Each present package and its workspace-local dependencies build
           # exactly once; --continue-on-error keeps independent siblings
-          # building after one fails. The build's own exit code is data, not
-          # a job verdict — per-package attribution happens in the next step.
+          # building after one fails. The build's exit code is DATA, not a
+          # job verdict — per-package attribution happens in the next step —
+          # so errexit (implied by `shell: bash`) must be suspended around
+          # the pipeline or a failing package would abort this step before
+          # PIPESTATUS is read and no honest `fail` could ever be recorded.
+          set +e
           # shellcheck disable=SC2086
           colcon build \
             --event-handlers console_cohesion+ \
@@ -233,8 +248,19 @@ jobs:
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
             --base-paths . 2>&1 | tee .sweep-build.log
           build_rc=${PIPESTATUS[0]}
+          set -e
           grep -E '^(Failed|Aborted)[[:space:]]+<<<' .sweep-build.log \
             | awk '{print $3}' | sort -u > .sweep-failed.txt || true
+          if ! grep -q '^Summary:' .sweep-build.log; then
+            # colcon always prints a Summary line when it actually ran; its
+            # absence means the build never executed (broken env/image/disk).
+            # That is an infrastructure fault — leave every outcome null
+            # (inconclusive, the recorder skips loudly) instead of letting
+            # the verdict step's install-dir checks fabricate per-package
+            # failures out of a pipeline problem.
+            echo "::error::colcon build produced no summary; infrastructure fault, all outcomes inconclusive"
+            exit 1
+          fi
           if [ "${build_rc}" -ne 0 ] && [ ! -s .sweep-failed.txt ]; then
             echo "::warning::colcon build exited ${build_rc} without naming failed packages; install-dir checks will attribute"
           fi
@@ -246,7 +272,7 @@ jobs:
           ROS_DISTRO_INPUT: ${{ inputs.ros_distro }}
         shell: bash
         run: |
-          set -uo pipefail
+          set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
@@ -340,9 +366,17 @@ jobs:
             result.json
             package-xmls/
           if-no-files-found: error
+          # A manual re-run of a failed leg produces the same artifact name;
+          # without overwrite the fresh attempt's upload would conflict and
+          # the recorder would keep matching the stale attempt's result.json.
+          overwrite: true
 
       - name: Report
         if: always()
+        env:
+          REPO_NAME: ${{ inputs.repo_name }}
+          REF_KIND: ${{ inputs.ref_kind }}
+          REF_VALUE: ${{ inputs.ref_value }}
         shell: bash
         run: |
           set -euo pipefail
@@ -356,7 +390,7 @@ jobs:
             fail=1
           fi
           {
-            echo "### sweep ${{ inputs.repo_name }} @ ${{ inputs.ref_kind }} ${{ inputs.ref_value }}"
+            echo "### sweep ${REPO_NAME} @ ${REF_KIND} ${REF_VALUE}"
             echo ""
             echo "| package | present | build | test |"
             echo "|---|---|---|---|"
