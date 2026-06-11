@@ -5,8 +5,8 @@ name: validate-package
 # the package's own CI ("producer mode").
 #
 # The calling repository is checked out via actions/checkout. For the
-# sweep-side counterpart that clones an external repo at a pinned ref,
-# see sweep-package.yaml.
+# sweep-side counterpart that clones a registry-listed repository at a
+# pinned ref and validates its registered packages, see sweep-repository.yaml.
 #
 # Container pin:
 #   ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>

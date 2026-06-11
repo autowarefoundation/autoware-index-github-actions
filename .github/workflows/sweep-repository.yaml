@@ -6,9 +6,8 @@ name: sweep-repository
 # Called by the autoware-index registry's sweep workflows (sweep-eager.yaml,
 # sweep-nightly.yaml) with one matrix row per (distro, repository).
 #
-# Successor to the per-package sweep-package.yaml: a repository hosting N
-# registered packages is cloned and built ONCE (each package exactly once,
-# shared tree), instead of N times across N matrix rows.
+# A repository hosting N registered packages is cloned and built ONCE (each
+# package exactly once, shared tree), instead of once per registered package.
 #
 # Honesty contract (per package, derived inside this one job):
 #   - present:        the registered package name exists in the cloned tree

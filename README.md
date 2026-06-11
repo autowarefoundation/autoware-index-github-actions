@@ -2,11 +2,10 @@
 
 Reusable GitHub Actions workflows for packages registered to [autoware-index](https://github.com/autowarefoundation/autoware-index).
 
-Three reusable workflows ship here:
+Two reusable workflows ship here:
 
 - **`validate-package.yaml`** — *producer mode.* A community package's own CI calls it to validate "my latest code still builds against the current latest Autoware Core release." Includes ccache caching and a clang-tidy job. A repository hosting several registered packages calls it once per package via a matrix (see the example below).
 - **`sweep-repository.yaml`** — *repository sweep mode.* The autoware-index registry's sweep workflows call it with one row per (distro, repository) to validate "every registered package of repository R at ref V still builds against the current latest Autoware Core release." Clones the repository once, builds the union of its registered packages once, derives an honest per-package verdict (own dependency closure for build, own tests only via `--packages-select`), uploads one result artifact per repository for the registry's recorder, and exports `resolved_sha`.
-- **`sweep-package.yaml`** — *legacy per-package sweep mode.* Superseded by `sweep-repository.yaml`; kept only until the registry's schema-v2 cutover merges, then removed.
 
 All of them pin the container to:
 
@@ -121,10 +120,6 @@ The job uploads `validate-result-<ros_distro>-<repo_name>-<resolved_version>` co
 | `runs-on` | | `'["ubuntu-24.04"]'` | Runner label as a JSON-encoded array |
 
 **Output:** `resolved_sha` — the exact commit SHA that was checked out and built.
-
-### `sweep-package.yaml` (legacy per-package sweep)
-
-Superseded by `sweep-repository.yaml` — one row per package meant a monorepo was cloned and built once per registered package, and its recorded status leaked sibling outcomes through reverse-dependency build/test selection. Kept callable until the registry's schema-v2 cutover merges, then removed. (Inputs unchanged; see the workflow file.)
 
 ## `latest-autoware-version` (composite action)
 
