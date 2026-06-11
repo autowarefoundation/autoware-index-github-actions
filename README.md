@@ -2,10 +2,11 @@
 
 Reusable GitHub Actions workflows for packages registered to [autoware-index](https://github.com/autowarefoundation/autoware-index).
 
-Two reusable workflows ship here, each with one calling pattern:
+Three reusable workflows ship here:
 
-- **`validate-package.yaml`** — *producer mode.* A community package's own CI calls it to validate "my latest code still builds against the current latest Autoware Core release." Includes ccache caching and a clang-tidy job.
-- **`sweep-package.yaml`** — *sweep mode.* The autoware-index registry's sweep workflows call it to validate "package P at ref R still builds against the current latest Autoware Core release." Clones the package explicitly, uploads a per-row result artifact for the registry's recorder, and exports `resolved_sha`.
+- **`validate-package.yaml`** — *producer mode.* A community package's own CI calls it to validate "my latest code still builds against the current latest Autoware Core release." Includes ccache caching and a clang-tidy job. A repository hosting several registered packages calls it once per package via a matrix (see the example below).
+- **`sweep-repository.yaml`** — *repository sweep mode.* The autoware-index registry's sweep workflows call it with one row per (distro, repository) to validate "every registered package of repository R at ref V still builds against the current latest Autoware Core release." Clones the repository once, builds the union of its registered packages once, derives an honest per-package verdict (own dependency closure for build, own tests only via `--packages-select`), uploads one result artifact per repository for the registry's recorder, and exports `resolved_sha`.
+- **`sweep-package.yaml`** — *legacy per-package sweep mode.* Superseded by `sweep-repository.yaml`; kept only until the registry's schema-v2 cutover merges, then removed.
 
 Both pin the container to:
 
@@ -47,24 +48,43 @@ jobs:
       concurrency-group: autoware-index-validate-${{ matrix.ros_distro }}-${{ github.event_name == 'push' && 'main' || github.ref }}
 ```
 
-The workflow runs `actions/checkout` on the calling repository, resolves the Autoware version, builds the named package against that pinned image, tests it, and runs clang-tidy in a follow-up job (artifact `clang-tidy-result-<ros_distro>-<resolved_version>`).
+The workflow runs `actions/checkout` on the calling repository, resolves the Autoware version, builds the named package against that pinned image, tests it, and runs clang-tidy in a follow-up job (artifact `clang-tidy-result-<ros_distro>-<package_name>-<resolved_version>`).
 
-### Sweep mode (`sweep-package.yaml`)
+A repository hosting **several registered packages** validates each independently with a matrix — every leg gets its own concurrency group and clang-tidy artifact automatically:
 
-Called from the autoware-index registry's sweep workflows. The registry knows the package's URL and the exact ref to test, so both are passed explicitly:
+```yaml
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        package_name: [autoware_a_filter, zz_planner_b]
+    uses: autowarefoundation/autoware-index-github-actions/.github/workflows/validate-package.yaml@main
+    with:
+      ros_distro: jazzy
+      package_name: ${{ matrix.package_name }}
+```
+
+### Repository sweep mode (`sweep-repository.yaml`)
+
+Called from the autoware-index registry's sweep workflows with one matrix row per (distro, repository). The registry knows the repository's URL, the exact ref to test, and the registered packages it hosts, so all are passed explicitly:
 
 ```yaml
 jobs:
   sweep:
-    uses: autowarefoundation/autoware-index-github-actions/.github/workflows/sweep-package.yaml@main
+    uses: autowarefoundation/autoware-index-github-actions/.github/workflows/sweep-repository.yaml@main
     with:
       ros_distro: jazzy
-      package_name: autoware_livox_tag_filter
-      package_repository: https://github.com/autowarefoundation/autoware_livox_tag_filter
-      package_ref: "0.2.1"
+      repo_name: awesome_tools
+      repository: https://github.com/example-org/awesome_tools
+      ref_kind: tag
+      ref_value: "1.2.0"
+      packages: autoware_a_filter zz_planner_b
 ```
 
-The job uploads `validate-result-<ros_distro>-<package_name>-<resolved_version>` containing `result.json` (`autoware_version`, `build_outcome`, `test_outcome`, `resolved_sha`, the inputs). The registry's recorder (`scripts/build_envelopes.py` in autoware-index) globs the per-package artifact and reads the resolved version out of `result.json` — don't rename the artifact prefix without bumping the recorder.
+One job clones the repository once and builds the union of the registered packages once (`colcon build --packages-up-to <present> --continue-on-error`, no GHA build cache). Per-package honesty: a package's **build** verdict comes from its own workspace-local dependency closure (a broken in-repo dependency honestly fails its dependents; an independent sibling's failure does not), its **test** verdict from its own tests only (`colcon test --packages-select <pkg> --return-code-on-test-failure`), and a registered package missing from the tree is reported `present: false` and fails the job loudly — never recorded as pass or fail.
+
+The job uploads `validate-result-<ros_distro>-<repo_name>-<resolved_version>` containing `result.json` (`schema: 2`, identity, `ref`, `resolved_sha`, and a per-package `{present, build_outcome, test_outcome}` map) plus `package-xmls/<pkg>.xml` — the pristine `package.xml` of every present package, copied before `remove-exec-depend`, which the registry's recorder caches to `data:metadata/`. Don't rename the artifact prefix or reshape `result.json` without bumping the recorder (`scripts/build_envelopes.py` in autoware-index).
 
 `resolved_sha` is also exported as a workflow output for callers that prefer reading it directly.
 
@@ -82,23 +102,29 @@ The job uploads `validate-result-<ros_distro>-<package_name>-<resolved_version>`
 | `pull-ccache` | | `true` | Restore ccache from GHA cache before build |
 | `push-ccache` | | `false` | Save ccache to GHA cache after build (typically `true` only on push-to-main) |
 | `cache-key-element` | | `default` | Extra discriminator baked into the ccache key |
-| `concurrency-group` | | per-run | Concurrency group for this workflow_call invocation |
+| `concurrency-group` | | per-(run, package) | Concurrency group for this workflow_call invocation. The default isolates matrix legs of one caller run from each other. |
 | `cancel-in-progress` | | `false` | Whether to cancel in-progress runs in the group |
 | `clang_tidy_config_url` | | autoware `main` `.clang-tidy-ci` | URL of the `.clang-tidy` config used by the clang-tidy job |
 
-### `sweep-package.yaml` (sweep)
+### `sweep-repository.yaml` (repository sweep)
 
 | Input | Required | Default | Meaning |
 |-------|----------|---------|---------|
 | `ros_distro` | ✓ | — | ROS 2 distribution |
-| `autoware_version` | | resolved at runtime | Autoware Core SemVer; drives the container tag. Leave unset to auto-resolve. |
-| `package_name` | ✓ | — | ROS package name; passed to `colcon --packages-up-to` |
-| `package_repository` | ✓ | — | Git URL of the package to clone |
-| `package_ref` | ✓ | — | Tag, branch, or sha of `package_repository` to check out |
+| `autoware_version` | | resolved at runtime | Autoware Core SemVer; drives the container tag. Leave unset to auto-resolve — all packages of the repository validate against ONE version. |
+| `repo_name` | ✓ | — | Registry key of the repository entry (artifact + record identity) |
+| `repository` | ✓ | — | Git URL of the repository to clone |
+| `ref_kind` | ✓ | — | Registered ref kind (`tag` \| `sha` \| `branch`), recorded in `result.json` |
+| `ref_value` | ✓ | — | Tag, branch, or sha of `repository` to check out |
+| `packages` | ✓ | — | Space-separated registered ROS package names hosted by this repository |
 | `base_image_stage` | | `core-devel` | Container image stage |
 | `runs-on` | | `'["ubuntu-24.04"]'` | Runner label as a JSON-encoded array |
 
 **Output:** `resolved_sha` — the exact commit SHA that was checked out and built.
+
+### `sweep-package.yaml` (legacy per-package sweep)
+
+Superseded by `sweep-repository.yaml` — one row per package meant a monorepo was cloned and built once per registered package, and its recorded status leaked sibling outcomes through reverse-dependency build/test selection. Kept callable until the registry's schema-v2 cutover merges, then removed. (Inputs unchanged; see the workflow file.)
 
 ## `latest-autoware-version` (composite action)
 
