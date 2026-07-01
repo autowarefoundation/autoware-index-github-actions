@@ -147,7 +147,7 @@ jobs:
 
       - name: Restore ccache
         if: ${{ inputs.pull-ccache == true }}
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}-${{ github.sha }}
@@ -178,7 +178,7 @@ jobs:
 
       - name: Save ccache
         if: ${{ inputs.push-ccache == true }}
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-main-${{ runner.arch }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}-${{ github.sha }}
