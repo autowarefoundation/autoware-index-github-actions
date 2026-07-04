@@ -12,19 +12,19 @@ name: sweep-repository
 # Honesty contract (per package, derived inside this one job):
 #   - present:        the registered package name exists in the cloned tree
 #                     (`colcon list`). Absent packages are reported with
-#                     present:false and FAIL this job loudly — the registry
+#                     present:false and FAIL this job loudly: the registry
 #                     entry is wrong; nothing is fabricated for them.
 #   - build_outcome:  "success" iff the package's own dependency closure
 #                     (`colcon list --packages-up-to <pkg>`, workspace-local)
 #                     contains no failed package and its install dir exists.
 #                     A broken in-repo dependency honestly fails its
-#                     dependents — they are unusable at that source state.
+#                     dependents; they are unusable at that source state.
 #   - test_outcome:   the package's OWN tests only (`colcon test
 #                     --packages-select <pkg> --return-code-on-test-failure`).
 #                     A sibling's tests never touch this package's verdict.
 #                     null when the build already failed (tests never ran).
 #
-# Artifact contract (consumed by autoware-index scripts/build_envelopes.py —
+# Artifact contract (consumed by autoware-index scripts/build_envelopes.py;
 # don't rename the prefix or reshape result.json without bumping the recorder):
 #   name:  validate-result-<ros_distro>-<repo_name>-<resolved_version>
 #   files: result.json        {"schema": 2, ros_distro, autoware_version,
@@ -57,7 +57,7 @@ on:
         description: |
           Autoware SemVer (e.g. "1.8.0"). Drives the container tag.
           When empty (the default), the workflow falls back to the
-          latest-autoware-version composite action — the freshest
+          latest-autoware-version composite action: the freshest
           autoware release whose container image is already on GHCR.
           See .github/actions/latest-autoware-version/action.yaml. The
           recorder reads the resolved value from result.json.
@@ -227,6 +227,7 @@ jobs:
         run: |
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
+          # shellcheck disable=SC1090
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
             . /opt/autoware/setup.sh
@@ -234,7 +235,7 @@ jobs:
           # Each present package and its workspace-local dependencies build
           # exactly once; --continue-on-error keeps independent siblings
           # building after one fails. The build's exit code is DATA, not a
-          # job verdict — per-package attribution happens in the next step —
+          # job verdict (per-package attribution happens in the next step),
           # so errexit (implied by `shell: bash`) must be suspended around
           # the pipeline or a failing package would abort this step before
           # PIPESTATUS is read and no honest `fail` could ever be recorded.
@@ -253,7 +254,7 @@ jobs:
           if ! grep -q '^Summary:' .sweep-build.log; then
             # colcon always prints a Summary line when it actually ran; its
             # absence means the build never executed (broken env/image/disk).
-            # That is an infrastructure fault — leave every outcome null
+            # That is an infrastructure fault: leave every outcome null
             # (inconclusive, the recorder skips loudly) instead of letting
             # the verdict step's install-dir checks fabricate per-package
             # failures out of a pipeline problem.
@@ -273,6 +274,7 @@ jobs:
         run: |
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
+          # shellcheck disable=SC1090
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
             . /opt/autoware/setup.sh
@@ -320,7 +322,7 @@ jobs:
 
           # build_outcome/test_outcome lines written by the verdict step;
           # packages never reaching it (absent, or the build steps were
-          # skipped/cancelled) get explicit nulls — the recorder treats
+          # skipped/cancelled) get explicit nulls; the recorder treats
           # those as inconclusive, never as pass or fail.
           results = {}
           results_file = Path(".sweep-results.txt")
@@ -398,11 +400,11 @@ jobs:
               if [ -n "${line}" ]; then
                 echo "| ${pkg} | yes | $(awk '{print $2}' <<< "${line}") | $(awk '{print $3}' <<< "${line}") |"
               else
-                echo "| ${pkg} | yes | — | — |"
+                echo "| ${pkg} | yes | - | - |"
               fi
             done < <(cat .sweep-present.txt 2>/dev/null || true)
             while IFS= read -r pkg; do
-              echo "| ${pkg} | **no** | — | — |"
+              echo "| ${pkg} | **no** | - | - |"
             done < <(cat .sweep-absent.txt 2>/dev/null || true)
           } >> "${GITHUB_STEP_SUMMARY}"
           exit "${fail}"

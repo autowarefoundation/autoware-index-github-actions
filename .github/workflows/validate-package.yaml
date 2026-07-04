@@ -20,7 +20,7 @@ name: validate-package
 # workflow intentionally does not expose a build_depends_repos input.
 #
 # If the resolved image tag does not exist on GHCR, the container pull
-# fails with "manifest unknown" - that is the intended failure signal.
+# fails with "manifest unknown"; that is the intended failure signal.
 
 on:
   workflow_call:
@@ -33,7 +33,7 @@ on:
         description: |
           Autoware SemVer (e.g. "1.8.0"). Drives the container tag.
           When empty (the default), the workflow falls back to the
-          latest-autoware-version composite action — the freshest
+          latest-autoware-version composite action: the freshest
           autoware release whose container image is already on GHCR.
           See .github/actions/latest-autoware-version/action.yaml.
         required: false
@@ -74,8 +74,8 @@ on:
         description: |
           Concurrency group for this workflow_call invocation. When empty
           (the default), falls back to a per-(run, distro, package) group so
-          the matrix legs of one caller run — e.g. a monorepo validating each
-          of its registered packages, possibly across several ROS distros —
+          the matrix legs of one caller run (e.g. a monorepo validating each
+          of its registered packages, possibly across several ROS distros)
           never serialize or cancel each other.
         required: false
         type: string
