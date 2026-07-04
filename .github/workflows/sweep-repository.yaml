@@ -227,6 +227,7 @@ jobs:
         run: |
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
+          # shellcheck disable=SC1090
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
             . /opt/autoware/setup.sh
@@ -273,6 +274,7 @@ jobs:
         run: |
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
+          # shellcheck disable=SC1090
           . "/opt/ros/${ROS_DISTRO_INPUT}/setup.sh"
           if [ -f /opt/autoware/setup.sh ]; then
             . /opt/autoware/setup.sh
