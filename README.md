@@ -83,6 +83,8 @@ jobs:
 
 One job clones the repository once and builds the union of the registered packages once (`colcon build --packages-up-to <present> --continue-on-error`, no GHA build cache). Per-package honesty: a package's **build** verdict comes from its own workspace-local dependency closure (a broken in-repo dependency honestly fails its dependents; an independent sibling's failure does not), its **test** verdict from its own tests only (`colcon test --packages-select <pkg> --return-code-on-test-failure`), and a registered package missing from the tree is reported `present: false` and fails the job loudly, never recorded as pass or fail.
 
+A `package.xml` declaring a rosdep key that cannot be resolved counts as a closure failure — the manifest is the defect, so the package genuinely cannot build at that source state. `rosdep install` is retried with `--skip-keys` for the unresolvable keys so siblings still get their dependencies. A rosdep failure naming no key at all (apt mirror, network, broken image) stays an infrastructure fault: every outcome is left `null` and the job goes red without attributing anything.
+
 The job uploads `validate-result-<ros_distro>-<repo_name>-<resolved_version>` containing `result.json` (`schema: 2`, identity, `ref`, `resolved_sha`, and a per-package `{present, build_outcome, test_outcome}` map) plus `package-xmls/<pkg>.xml`: the pristine `package.xml` of every present package, copied before `remove-exec-depend`, which the registry's recorder caches to `data:metadata/`. Don't rename the artifact prefix or reshape `result.json` without bumping the recorder (`scripts/build_envelopes.py` in autoware-index).
 
 `resolved_sha` is also exported as a workflow output for callers that prefer reading it directly.

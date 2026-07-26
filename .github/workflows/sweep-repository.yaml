@@ -19,6 +19,10 @@ name: sweep-repository
 #                     contains no failed package and its install dir exists.
 #                     A broken in-repo dependency honestly fails its
 #                     dependents; they are unusable at that source state.
+#                     A closure member declaring a rosdep key that cannot be
+#                     resolved counts as failed too: the manifest is the
+#                     defect. rosdep failures naming no key stay an
+#                     infrastructure fault (all outcomes null).
 #   - test_outcome:   the package's OWN tests only (`colcon test
 #                     --packages-select <pkg> --return-code-on-test-failure`).
 #                     A sibling's tests never touch this package's verdict.
@@ -207,6 +211,7 @@ jobs:
         run: |
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}"
+          : > .sweep-failed.txt
           apt-get -yqq update
           rosdep update || echo "::warning::rosdep update failed; using the image's existing sources"
           # shellcheck disable=SC2086
@@ -214,9 +219,33 @@ jobs:
           if [ -f /opt/autoware/setup.sh ]; then
             . /opt/autoware/setup.sh
           fi
+          # rosdep's exit code is DATA, not a job verdict: a key it cannot
+          # resolve is a defect in the declaring package's OWN manifest. Seed
+          # those packages into .sweep-failed.txt so the verdict step fails
+          # them (and their dependents) through the usual closure check, then
+          # retry without their keys so one bad manifest cannot blind its
+          # siblings. A failure naming no key is an infrastructure fault:
+          # leave every outcome null and go red without attributing.
           # shellcheck disable=SC2086
-          DEBIAN_FRONTEND=noninteractive rosdep install -yqq \
-            --from-paths ${package_paths} --ignore-src --rosdistro "${ROS_DISTRO_INPUT}"
+          if ! DEBIAN_FRONTEND=noninteractive rosdep install -yqq \
+              --from-paths ${package_paths} --ignore-src --rosdistro "${ROS_DISTRO_INPUT}" \
+              > .sweep-rosdep.log 2>&1; then
+            cat .sweep-rosdep.log
+            sed -n '/could not have their rosdep keys resolved/,$p' .sweep-rosdep.log \
+              | sed -n 's/^\([^[:space:]:]*\): Cannot locate rosdep definition for \[\(.*\)\]$/\1 \2/p' \
+              > .sweep-unresolved.txt
+            if [ ! -s .sweep-unresolved.txt ]; then
+              echo "::error::rosdep install failed without naming an unresolvable key; infrastructure fault, all outcomes inconclusive"
+              exit 1
+            fi
+            awk '{print $1}' .sweep-unresolved.txt | sort -u > .sweep-failed.txt
+            skip_keys=$(awk '{print $2}' .sweep-unresolved.txt | sort -u | paste -sd' ')
+            echo "::error::unresolvable rosdep key(s) [${skip_keys}] declared by: $(paste -sd' ' .sweep-failed.txt)"
+            # shellcheck disable=SC2086
+            DEBIAN_FRONTEND=noninteractive rosdep install -yqq \
+              --from-paths ${package_paths} --ignore-src --rosdistro "${ROS_DISTRO_INPUT}" \
+              --skip-keys "${skip_keys}"
+          fi
 
       - name: Build (union of registered packages)
         if: steps.scan.outputs.present != ''
@@ -249,8 +278,10 @@ jobs:
             --base-paths . 2>&1 | tee .sweep-build.log
           build_rc=${PIPESTATUS[0]}
           set -e
+          # Append: the rosdep step may already have seeded this file with
+          # packages whose manifests declare an unresolvable key.
           grep -E '^(Failed|Aborted)[[:space:]]+<<<' .sweep-build.log \
-            | awk '{print $3}' | sort -u > .sweep-failed.txt || true
+            | awk '{print $3}' | sort -u >> .sweep-failed.txt || true
           if ! grep -q '^Summary:' .sweep-build.log; then
             # colcon always prints a Summary line when it actually ran; its
             # absence means the build never executed (broken env/image/disk).
