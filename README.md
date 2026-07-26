@@ -2,12 +2,13 @@
 
 Reusable GitHub Actions workflows for packages registered to [autoware-index](https://github.com/autowarefoundation/autoware-index).
 
-Two reusable workflows ship here:
+One reusable workflow ships here:
 
 - **`validate-package.yaml`**: *producer mode.* A community package's own CI calls it to validate "my latest code still builds against the current latest Autoware Core release." Includes ccache caching and a clang-tidy job. A repository hosting several registered packages calls it once per package via a matrix (see the example below).
-- **`sweep-repository.yaml`**: *repository sweep mode.* The autoware-index registry's sweep workflows call it with one row per (distro, repository) to validate "every registered package of repository R at ref V still builds against the current latest Autoware Core release." Clones the repository once, builds the union of its registered packages once, derives an honest per-package verdict (own dependency closure for build, own tests only via `--packages-select`), uploads one result artifact per repository for the registry's recorder, and exports `resolved_sha`.
 
-All of them pin the container to:
+The registry-side counterpart, `sweep-repository.yaml`, used to live here too. It now lives in [autoware-index](https://github.com/autowarefoundation/autoware-index) alongside the recorder that parses its output, so the two halves of that contract change together.
+
+It pins the container to:
 
 ```
 ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
@@ -64,34 +65,9 @@ jobs:
       package_name: ${{ matrix.package_name }}
 ```
 
-### Repository sweep mode (`sweep-repository.yaml`)
-
-Called from the autoware-index registry's sweep workflows with one matrix row per (distro, repository). The registry knows the repository's URL, the exact ref to test, and the registered packages it hosts, so all are passed explicitly:
-
-```yaml
-jobs:
-  sweep:
-    uses: autowarefoundation/autoware-index-github-actions/.github/workflows/sweep-repository.yaml@main
-    with:
-      ros_distro: jazzy
-      repo_name: awesome_tools
-      repository: https://github.com/example-org/awesome_tools
-      ref_kind: tag
-      ref_value: "1.2.0"
-      packages: autoware_a_filter zz_planner_b
-```
-
-One job clones the repository once and builds the union of the registered packages once (`colcon build --packages-up-to <present> --continue-on-error`, no GHA build cache). Per-package honesty: a package's **build** verdict comes from its own workspace-local dependency closure (a broken in-repo dependency honestly fails its dependents; an independent sibling's failure does not), its **test** verdict from its own tests only (`colcon test --packages-select <pkg> --return-code-on-test-failure`), and a registered package missing from the tree is reported `present: false` and fails the job loudly, never recorded as pass or fail.
-
-A `package.xml` declaring a rosdep key that cannot be resolved counts as a closure failure — the manifest is the defect, so the package genuinely cannot build at that source state. `rosdep install` is retried with `--skip-keys` for the unresolvable keys so siblings still get their dependencies. A rosdep failure naming no key at all (apt mirror, network, broken image) stays an infrastructure fault: every outcome is left `null` and the job goes red without attributing anything.
-
-The job uploads `validate-result-<ros_distro>-<repo_name>-<resolved_version>` containing `result.json` (`schema: 2`, identity, `ref`, `resolved_sha`, and a per-package `{present, build_outcome, test_outcome}` map) plus `package-xmls/<pkg>.xml`: the pristine `package.xml` of every present package, copied before `remove-exec-depend`, which the registry's recorder caches to `data:metadata/`. Don't rename the artifact prefix or reshape `result.json` without bumping the recorder (`scripts/build_envelopes.py` in autoware-index).
-
-`resolved_sha` is also exported as a workflow output for callers that prefer reading it directly.
-
 ## Workflow inputs
 
-### `validate-package.yaml` (producer)
+### `validate-package.yaml`
 
 | Input | Required | Default | Meaning |
 |-------|----------|---------|---------|
@@ -107,27 +83,11 @@ The job uploads `validate-result-<ros_distro>-<repo_name>-<resolved_version>` co
 | `cancel-in-progress` | | `false` | Whether to cancel in-progress runs in the group |
 | `clang_tidy_config_url` | | autoware `main` `.clang-tidy-ci` | URL of the `.clang-tidy` config used by the clang-tidy job |
 
-### `sweep-repository.yaml` (repository sweep)
-
-| Input | Required | Default | Meaning |
-|-------|----------|---------|---------|
-| `ros_distro` | ✓ | - | ROS 2 distribution |
-| `autoware_version` | | resolved at runtime | Autoware Core SemVer; drives the container tag. Leave unset to auto-resolve; all packages of the repository validate against ONE version. |
-| `repo_name` | ✓ | - | Registry key of the repository entry (artifact + record identity) |
-| `repository` | ✓ | - | Git URL of the repository to clone |
-| `ref_kind` | ✓ | - | Registered ref kind (`tag` \| `sha` \| `branch`), recorded in `result.json` |
-| `ref_value` | ✓ | - | Tag, branch, or sha of `repository` to check out |
-| `packages` | ✓ | - | Space-separated registered ROS package names hosted by this repository |
-| `base_image_stage` | | `core-devel` | Container image stage |
-| `runs-on` | | `'["ubuntu-24.04"]'` | Runner label as a JSON-encoded array |
-
-**Output:** `resolved_sha`, the exact commit SHA that was checked out and built.
-
 ## `latest-autoware-version` (composite action)
 
 `.github/actions/latest-autoware-version/action.yaml` returns the SemVer of the freshest [`autowarefoundation/autoware`](https://github.com/autowarefoundation/autoware/releases) release whose `ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<version>` image is already published on GHCR. Releases ship before images, so the action walks releases newest-first and returns the first SemVer with a pullable image, sliding past the release-vs-image gap.
 
-Every reusable workflow invokes it in its `resolve` job (skipping it entirely when the caller supplied an explicit `autoware_version`). You can also call it directly from your own workflow if you need the version for something else.
+`validate-package.yaml` invokes it in its `resolve` job (skipping it entirely when the caller supplied an explicit `autoware_version`). You can also call it directly from your own workflow if you need the version for something else.
 
 | Input | Required | Default | Meaning |
 |-------|----------|---------|---------|
@@ -150,12 +110,12 @@ Direct invocation:
 
 ## Container image convention
 
-These images are published from [`autowarefoundation/autoware/docker`](https://github.com/autowarefoundation/autoware/tree/main/docker) per release. The `core-devel` stage ships `/opt/autoware/` already populated with compiled `autoware_core` and its build dependencies, so neither workflow fetches or rebuilds core itself; they just build your package on top.
+These images are published from [`autowarefoundation/autoware/docker`](https://github.com/autowarefoundation/autoware/tree/main/docker) per release. The `core-devel` stage ships `/opt/autoware/` already populated with compiled `autoware_core` and its build dependencies, so the workflow never fetches or rebuilds core itself; it just builds your package on top.
 
 The release-vs-image race is handled by `latest-autoware-version`'s walk (see above). If every recent release lacks an image, the action fails loudly with the list of skipped versions; callers can work around it by passing `autoware_version: "..."` explicitly until the image lands.
 
 ## Related repositories
 
-- [`autoware-index`](https://github.com/autowarefoundation/autoware-index): the registry whose sweep workflows consume `sweep-repository.yaml`.
-- [`autoware-github-actions`](https://github.com/autowarefoundation/autoware-github-actions) provides the composite actions this workflow chains (`remove-exec-depend`, `get-self-packages`, `colcon-build`, `colcon-test`, `clang-tidy`).
+- [`autoware-index`](https://github.com/autowarefoundation/autoware-index): the registry. Its sweep uses the `latest-autoware-version` action from this repo and hosts its own `sweep-repository.yaml`.
+- [`autoware-github-actions`](https://github.com/autowarefoundation/autoware-github-actions) provides the composite actions `validate-package.yaml` chains (`remove-exec-depend`, `get-self-packages`, `colcon-build`, `colcon-test`, `clang-tidy`).
 - [`autowarefoundation/autoware`](https://github.com/autowarefoundation/autoware/tree/main/docker): where the container images are built.
