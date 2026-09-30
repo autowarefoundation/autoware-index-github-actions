@@ -50,6 +50,10 @@ jobs:
 
 The workflow runs `actions/checkout` on the calling repository, resolves the Autoware version, builds the named package against that pinned image, tests it, and runs clang-tidy in a follow-up job (artifact `clang-tidy-result-<ros_distro>-<package_name>-<resolved_version>`).
 
+The runner's `$GITHUB_WORKSPACE` is the colcon workspace, with the repository checked out at `src/<repository-name>`. Dependency installation, builds, and tests run from the workspace root. For example, `tier4/tamagawa_imu_driver` is checked out at `src/tamagawa_imu_driver`. Generated `build/`, `install/`, and `log/` directories and the colcon mixin checkout are siblings of `src/`, so packages at the repository root can use normal ament lint discovery without scanning CI-generated files.
+
+Both build and clang-tidy jobs use this layout. Build caches are separated by layout, package, and Autoware version. The clang-tidy action receives this checkout path through its `source-directory` input. It downloads the selected config and runs file discovery, ignore matching, and analysis from the source directory, using the compilation database at the workspace root. Repository-relative `.clang-tidy-ignore` patterns keep their existing meaning.
+
 A repository hosting **several registered packages** validates each independently with a matrix; every leg gets its own concurrency group and clang-tidy artifact automatically:
 
 ```yaml
