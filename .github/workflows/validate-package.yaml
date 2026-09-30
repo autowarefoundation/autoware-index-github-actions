@@ -4,7 +4,8 @@ name: validate-package
 # against a version-pinned Autoware Core container image, called from
 # the package's own CI ("producer mode").
 #
-# The calling repository is checked out via actions/checkout. For the
+# The calling repository is checked out under src/<repository-name>, keeping
+# colcon outputs and CI tool checkouts outside the package source. For the
 # sweep-side counterpart that clones a registry-listed repository at a
 # pinned ref and validates its registered packages, see
 # autoware-index/.github/workflows/sweep-repository.yaml.
@@ -125,6 +126,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          path: src/${{ github.event.repository.name }}
 
       - name: Show machine specs
         run: lscpu && free -h && df -h
@@ -169,7 +172,7 @@ jobs:
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
-          cache-key-element: validate-package-${{ inputs.cache-key-element }}
+          cache-key-element: validate-package-src-${{ inputs.package_name }}-${{ needs.resolve.outputs.autoware_version }}-${{ inputs.cache-key-element }}
           underlay-workspace: /opt/autoware
 
       - name: ccache stats after build
@@ -226,6 +229,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          path: src/${{ github.event.repository.name }}
 
       - name: Remove exec_depend
         uses: autowarefoundation/autoware-github-actions/remove-exec-depend@v1
@@ -240,7 +245,8 @@ jobs:
         with:
           rosdistro: ${{ inputs.ros_distro }}
           target-packages: ${{ inputs.package_name }}
+          source-directory: src/${{ github.event.repository.name }}
           clang-tidy-config-url: ${{ inputs.clang_tidy_config_url }}
-          cache-key-element: validate-package-${{ inputs.cache-key-element }}
+          cache-key-element: validate-package-src-${{ inputs.package_name }}-${{ needs.resolve.outputs.autoware_version }}-${{ inputs.cache-key-element }}
           artifact-name: clang-tidy-result-${{ inputs.ros_distro }}-${{ inputs.package_name }}-${{ needs.resolve.outputs.autoware_version }}
           underlay-workspace: /opt/autoware
