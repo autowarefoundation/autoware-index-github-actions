@@ -129,8 +129,9 @@ jobs:
         if: inputs.base_image_stage == ''
         uses: autowarefoundation/autoware-index-github-actions/.github/actions/detect-base-image-stage@main
         with:
+          # No package list: colcon-build also builds the packages above
+          # package_name, so every package of the repository counts.
           paths: src/${{ github.event.repository.name }}
-          packages: ${{ inputs.package_name }}
 
       - name: Resolve latest autoware_version
         id: latest

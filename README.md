@@ -14,9 +14,9 @@ It pins the container to:
 ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
 ```
 
-`base_image_stage` is **optional**. When unset (the default), the `resolve` job runs the [`detect-base-image-stage`](#detect-base-image-stage) composite action on the checked-out repository. It picks `core-devel-cuda` when the package needs CUDA, and the lighter `core-devel` otherwise. A non-empty `base_image_stage` skips the detection.
+`base_image_stage` is **optional**. When unset (the default), the `resolve` job runs the [`detect-base-image-stage`](#detect-base-image-stage-composite-action) composite action on the checked-out repository. It picks `core-devel-cuda` when a package of the repository needs CUDA, and the lighter `core-devel` otherwise. A non-empty `base_image_stage` skips the detection.
 
-`autoware_version` is **optional**. When unset (the default), a `resolve` job invokes the [`latest-autoware-version`](#latest-autoware-version) composite action so callers don't have to bump CI per release. If a caller already knows the version (e.g. a release branch validating against a specific Autoware), passing `autoware_version: "1.8.0"` explicitly skips the action entirely.
+`autoware_version` is **optional**. When unset (the default), a `resolve` job invokes the [`latest-autoware-version`](#latest-autoware-version-composite-action) composite action so callers don't have to bump CI per release. If a caller already knows the version (e.g. a release branch validating against a specific Autoware), passing `autoware_version: "1.8.0"` explicitly skips the action entirely.
 
 Registered packages must **not** ship a `build_depends.repos`; the pinned image already contains the matching Autoware Core build, so none of the workflows exposes a `build_depends_repos` input.
 
@@ -79,7 +79,7 @@ jobs:
 |-------|----------|---------|---------|
 | `ros_distro` | ✓ | - | ROS 2 distribution (e.g. `jazzy`) |
 | `autoware_version` | | resolved at runtime | Autoware Core SemVer (e.g. `1.8.0`); drives the container tag. Leave unset to auto-resolve. |
-| `package_name` | ✓ | - | ROS package name; passed to `colcon --packages-up-to` |
+| `package_name` | ✓ | - | ROS package name. The build uses `colcon --packages-above-and-dependencies`, and the test uses `--packages-above` |
 | `base_image_stage` | | detected at runtime | Container image stage, `core-devel` or `core-devel-cuda`. Leave unset to detect it from the package sources. |
 | `runs-on` | | `'["ubuntu-24.04"]'` | Runner label as a JSON-encoded array |
 | `pull-ccache` | | `true` | Restore ccache from GHA cache before build |
@@ -116,14 +116,18 @@ Direct invocation:
 
 ## `detect-base-image-stage` (composite action)
 
-`.github/actions/detect-base-image-stage/action.yaml` returns the image stage that a set of packages needs. It reads the `package.xml` files under the source paths, starts from the requested packages, and follows their dependencies to the other packages under the same paths. Directories with a `COLCON_IGNORE` file are skipped.
+`.github/actions/detect-base-image-stage/action.yaml` returns the image stage that a set of packages needs. It reads the `package.xml` files under the source paths, starts from the requested packages, and follows their dependencies to the other packages under the same paths. Directories with a `COLCON_IGNORE`, `AMENT_IGNORE` or `CATKIN_IGNORE` file are skipped. If a requested package is not found, or no `package.xml` is found at all, the action fails.
+
+`validate-package.yaml` passes no package list, so every package of the repository counts. The reason is that `colcon-build` also builds the packages above `package_name`. In a repository with one CUDA package, every package therefore builds in `core-devel-cuda`.
 
 A package in this closure needs CUDA when one of these is true:
 
-- Its `package.xml` depends on a CUDA package of Autoware Core: `autoware_cuda_dependency_meta`, `autoware_cuda_utils`, `autoware_tensorrt_common` or `cuda_blackboard`. The `core-devel` image does not contain these packages.
+- Its `package.xml` depends on a package under `src/core/cuda` of Autoware: `autoware_cuda_dependency_meta`, `autoware_cuda_utils`, `autoware_tensorrt_common`, `cuda_blackboard`, `negotiated`, `negotiated_interfaces` or `negotiated_examples`. The `core-devel` image does not contain these packages.
 - The `CMakeLists.txt` in the package directory, or a `.cmake` file in its `cmake/` directory, calls `find_package(CUDA)`, `find_package(CUDAToolkit)`, `find_package(TensorRT)`, `enable_language(CUDA)` or `check_language(CUDA)`, or lists `CUDA` in `project(... LANGUAGES ...)`.
 
 CMake files in deeper directories are not read. Vendored code there can call `find_package(CUDA)` without the package needing it, for example the tests of a vendored Eigen. Comments are removed before the match.
+
+Known limits: CUDA in a CMake file that `add_subdirectory()` or `CONFIG_EXTRAS` reads is not found, `condition=` attributes in `package.xml` are not evaluated, and a `#` inside a quoted CMake string is read as a comment.
 
 | Input | Required | Default | Meaning |
 |-------|----------|---------|---------|
@@ -134,11 +138,11 @@ CMake files in deeper directories are not read. Vendored code there can call `fi
 
 The CUDA image is much larger. `core-devel-cuda-jazzy` is 8.6 GB compressed and 23.8 GB unpacked, and `core-devel-jazzy` is 1.8 GB compressed. A job container pulls the image before any step runs, so no step can free disk space first. Nobody tested the CUDA image on the default `ubuntu-24.04` runner yet. If the pull runs out of disk space, pass a larger runner with `runs-on`.
 
-The CUDA image has CUDA, TensorRT and the CUDA packages of Autoware Core. It does not have ONNX Runtime. A package that uses ONNX Runtime must bring it.
+The CUDA image has CUDA, TensorRT, spconv and the packages under `src/core/cuda` of Autoware. It does not have ONNX Runtime. A package that uses ONNX Runtime must bring it.
 
 ## Container image convention
 
-These images are published from [`autowarefoundation/autoware/docker`](https://github.com/autowarefoundation/autoware/tree/main/docker) per release. The `core-devel` stage ships `/opt/autoware/` already populated with compiled `autoware_core` and its build dependencies, so the workflow never fetches or rebuilds core itself; it just builds your package on top. The `core-devel-cuda` stage adds CUDA, TensorRT and the CUDA packages of Autoware Core (`autoware_cuda` and `cuda_blackboard`).
+These images are published from [`autowarefoundation/autoware/docker`](https://github.com/autowarefoundation/autoware/tree/main/docker) per release. The `core-devel` stage ships `/opt/autoware/` already populated with compiled `autoware_core` and its build dependencies, so the workflow never fetches or rebuilds core itself; it just builds your package on top. The `core-devel-cuda` stage adds CUDA, TensorRT, spconv and the packages under `src/core/cuda` of Autoware (`autoware_cuda`, `cuda_blackboard` and `negotiated`).
 
 The release-vs-image race is handled by `latest-autoware-version`'s walk (see above). If every recent release lacks an image, the action fails loudly with the list of skipped versions; callers can work around it by passing `autoware_version: "..."` explicitly until the image lands.
 

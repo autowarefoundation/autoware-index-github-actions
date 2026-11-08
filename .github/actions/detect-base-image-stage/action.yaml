@@ -4,9 +4,10 @@ description: |
   needs: `core-devel-cuda` when a package in their dependency closure
   needs CUDA, `core-devel` otherwise.
 
-  A package needs CUDA when its package.xml depends on a CUDA package of
-  Autoware Core (autoware_cuda_dependency_meta, autoware_cuda_utils,
-  autoware_tensorrt_common, cuda_blackboard), or when the CMakeLists.txt
+  A package needs CUDA when its package.xml depends on a package under
+  src/core/cuda of Autoware (autoware_cuda_dependency_meta,
+  autoware_cuda_utils, autoware_tensorrt_common, cuda_blackboard,
+  negotiated, negotiated_interfaces, negotiated_examples), or when the CMakeLists.txt
   in the package directory, or a .cmake file in its cmake/ directory,
   calls find_package(CUDA|CUDAToolkit|TensorRT), enable_language(CUDA),
   check_language(CUDA), or lists CUDA in project(... LANGUAGES ...).
@@ -47,7 +48,15 @@ runs:
         set -euo pipefail
         result=$(python3 -I "${SCRIPT}" --paths "${SOURCE_PATHS}" --packages "${PACKAGES}")
         stage=$(jq -r .base_image_stage <<< "${result}")
-        reason=$(jq -r .reason <<< "${result}")
+        reason=$(jq -r .reason <<< "${result}" | tr -s '[:space:]' ' ')
+        reason="${reason% }"
+        case "${stage}" in
+          core-devel | core-devel-cuda) ;;
+          *)
+            echo "::error::unexpected base_image_stage from the detection"
+            exit 1
+            ;;
+        esac
         echo "::notice::base_image_stage=${stage} (${reason})"
         echo "base_image_stage=${stage}" >> "${GITHUB_OUTPUT}"
         echo "reason=${reason}" >> "${GITHUB_OUTPUT}"

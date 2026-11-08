@@ -18,13 +18,22 @@ import xml.etree.ElementTree as ET
 CUDA_IMAGE = "core-devel-cuda"
 DEFAULT_IMAGE = "core-devel"
 
-# The CUDA packages of Autoware Core. core-devel does not contain them.
+# The packages under src/core/cuda of Autoware. core-devel does not contain them.
 CUDA_PACKAGES = {
     "autoware_cuda_dependency_meta",
     "autoware_cuda_utils",
     "autoware_tensorrt_common",
     "cuda_blackboard",
+    "negotiated",
+    "negotiated_interfaces",
+    "negotiated_examples",
 }
+
+IGNORE_MARKERS = ("COLCON_IGNORE", "AMENT_IGNORE", "CATKIN_IGNORE")
+
+# ROS package names (REP 144) plus upper case and hyphens, so that the name
+# can go into a GitHub output and a workflow command without escaping.
+PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 DEPEND_TAGS = {
     "depend",
@@ -43,22 +52,29 @@ CMAKE_SIGNALS = [
 
 
 def find_packages(roots: list[Path]) -> dict[str, Path]:
-    """Map package name to package directory, skipping COLCON_IGNORE trees."""
+    """Map package name to package directory, skipping ignored trees."""
     packages: dict[str, Path] = {}
     for root in roots:
         for manifest in sorted(root.rglob("package.xml")):
             directory = manifest.parent
             relative = directory.relative_to(root)
             # relative.parents ends with ".", so the root itself is checked too.
-            if any((root / part / "COLCON_IGNORE").exists() for part in [relative, *relative.parents]):
+            if any(
+                (root / part / marker).exists()
+                for part in [relative, *relative.parents]
+                for marker in IGNORE_MARKERS
+            ):
                 continue
             try:
                 name = ET.parse(manifest).getroot().findtext("name")
             except ET.ParseError as error:
                 print(f"::warning::cannot parse {manifest}: {error}", file=sys.stderr)
                 continue
-            if name:
-                packages.setdefault(name.strip(), directory)
+            name = (name or "").strip()
+            if not PACKAGE_NAME.match(name):
+                print(f"::warning::{manifest} has no valid package name, skipping it", file=sys.stderr)
+                continue
+            packages.setdefault(name, directory)
     return packages
 
 
@@ -88,10 +104,12 @@ def cmake_signal(directory: Path) -> str | None:
 
 def detect(roots: list[Path], requested: list[str]) -> tuple[str, str]:
     packages = find_packages(roots)
+    if not packages:
+        sys.exit("::error::no package with a valid package.xml found under the source paths")
     missing = [name for name in requested if name not in packages]
     if missing:
-        print(f"::warning::packages not found under the source paths: {' '.join(missing)}", file=sys.stderr)
-    pending = [name for name in requested if name in packages] if requested else sorted(packages)
+        sys.exit(f"::error::packages not found under the source paths: {' '.join(missing)}")
+    pending = list(requested) if requested else sorted(packages)
     seen: set[str] = set()
     while pending:
         name = pending.pop(0)
