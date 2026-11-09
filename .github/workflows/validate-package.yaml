@@ -47,7 +47,10 @@ on:
         type: string
         default: ''
       package_name:
-        description: 'ROS package name; passed to colcon --packages-up-to.'
+        description: |
+          ROS package name. The build uses colcon
+          --packages-above-and-dependencies, and the test uses
+          --packages-above.
         required: true
         type: string
       base_image_stage:
@@ -132,6 +135,12 @@ jobs:
           # No package list: colcon-build also builds the packages above
           # package_name, so every package of the repository counts.
           paths: src/${{ github.event.repository.name }}
+
+      - name: Explain the override
+        if: inputs.base_image_stage == ''
+        shell: bash
+        run: |
+          echo "To use another image, pass \`base_image_stage\` to \`validate-package.yaml\`, for example \`base_image_stage: core-devel\`." >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Resolve latest autoware_version
         id: latest

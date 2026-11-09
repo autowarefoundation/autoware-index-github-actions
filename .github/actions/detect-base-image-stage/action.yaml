@@ -2,18 +2,9 @@ name: Detect base image stage
 description: |
   Return the Autoware container image stage that a set of ROS packages
   needs: `core-devel-cuda` when a package in their dependency closure
-  needs CUDA, `core-devel` otherwise.
-
-  A package needs CUDA when its package.xml depends on a package under
-  src/core/cuda of Autoware (autoware_cuda_dependency_meta,
-  autoware_cuda_utils, autoware_tensorrt_common, cuda_blackboard,
-  negotiated, negotiated_interfaces, negotiated_examples), or when the CMakeLists.txt
-  in the package directory, or a .cmake file in its cmake/ directory,
-  calls find_package(CUDA|CUDAToolkit|TensorRT), enable_language(CUDA),
-  check_language(CUDA), or lists CUDA in project(... LANGUAGES ...).
-  CMake files in deeper directories are not read, because vendored code
-  there (for example the tests of a vendored Eigen) can call
-  find_package(CUDA) without the package needing it.
+  needs CUDA, `core-devel` otherwise. The README of this repository lists
+  the signals. A package that needs the CUDA image declares
+  `<depend>autoware_cuda_dependency_meta</depend>` in its package.xml.
 
 inputs:
   paths:
@@ -24,6 +15,8 @@ inputs:
       Package names to start from, separated by spaces. The closure follows
       the dependencies to other packages under `paths`. Empty means every
       package under `paths`.
+      A name that is not found under
+      `paths` gets a warning and is left out.
     required: false
     default: ''
 
@@ -46,7 +39,7 @@ runs:
         SCRIPT: ${{ github.action_path }}/detect_base_image_stage.py
       run: |
         set -euo pipefail
-        result=$(python3 -I "${SCRIPT}" --paths "${SOURCE_PATHS}" --packages "${PACKAGES}")
+        result=$(python3 -I "${SCRIPT}" --paths="${SOURCE_PATHS}" --packages="${PACKAGES}")
         stage=$(jq -r .base_image_stage <<< "${result}")
         reason=$(jq -r .reason <<< "${result}" | tr -s '[:space:]' ' ')
         reason="${reason% }"
@@ -60,3 +53,8 @@ runs:
         echo "::notice::base_image_stage=${stage} (${reason})"
         echo "base_image_stage=${stage}" >> "${GITHUB_OUTPUT}"
         echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
+        {
+          echo "### Base image stage: \`${stage}\`"
+          echo
+          echo "Reason: ${reason}"
+        } >> "${GITHUB_STEP_SUMMARY}"
