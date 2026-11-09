@@ -124,8 +124,10 @@ class DetectTest(unittest.TestCase):
         self.assertEqual((stage, reason), (PLAIN, "no package to read under the source paths"))
         self.assertIn("zzz", stderr)
 
-    def test_tree_without_packages_gets_the_plain_image(self) -> None:
-        self.assertEqual(self.detect()[:2], (PLAIN, "no package to read under the source paths"))
+    def test_tree_without_packages_gets_the_plain_image_and_a_warning(self) -> None:
+        stage, reason, stderr = self.detect()
+        self.assertEqual((stage, reason), (PLAIN, "no package to read under the source paths"))
+        self.assertIn("::warning::no package to read", stderr)
 
     # package discovery
 
@@ -165,6 +167,7 @@ class DetectTest(unittest.TestCase):
         directory = self.root / "x\n::error::forged"
         directory.mkdir()
         (directory / "package.xml").write_text("<package")
+        self.package("a")
         _, _, stderr = self.detect()
         self.assertEqual(len(stderr.strip().splitlines()), 1)
         self.assertTrue(stderr.startswith("::warning::cannot parse "))
@@ -217,6 +220,8 @@ class DetectTest(unittest.TestCase):
             "#[==[\nfind_package(CUDA)\n]==]",
             'message("call find_package(CUDA) yourself")',
             'message(STATUS "enable_language(CUDA) is off")',
+            "message([[find_package(CUDA)]])",
+            "message([==[enable_language(CUDA)]==])",
             'project(a DESCRIPTION "a CUDA free package" LANGUAGES CXX)',
             "project(cuda)",
             "project(CUDA LANGUAGES CXX)",
@@ -248,6 +253,42 @@ class DetectTest(unittest.TestCase):
         (directory / "src").mkdir()
         (directory / "src" / "CMakeLists.txt").write_text("enable_language(CUDA)\n")
         self.assertEqual(self.detect()[:2], (CUDA, "a: src/CMakeLists.txt has `enable_language(CUDA)`"))
+
+    def test_quoted_subdirectory_is_read(self) -> None:
+        directory = self.package("a", cmake='add_subdirectory("src")')
+        (directory / "src").mkdir()
+        (directory / "src" / "CMakeLists.txt").write_text("enable_language(CUDA)\n")
+        self.assertEqual(self.detect()[0], CUDA)
+
+    def test_cmake_file_beside_the_cmakelists_is_read(self) -> None:
+        directory = self.package("a", cmake="include(gpu.cmake)")
+        (directory / "gpu.cmake").write_text("find_package(CUDAToolkit REQUIRED)\n")
+        self.assertEqual(self.detect()[:2], (CUDA, "a: gpu.cmake has `find_package(CUDAToolkit REQUIRED)`"))
+
+    def test_cmake_directory_in_another_letter_case_is_read(self) -> None:
+        directory = self.package("a")
+        (directory / "CMake").mkdir()
+        (directory / "CMake" / "gpu.cmake").write_text("find_package(CUDA REQUIRED)\n")
+        self.assertEqual(self.detect()[0], CUDA)
+
+    def test_symlinked_cmake_directory_outside_the_root_is_not_read(self) -> None:
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        (Path(outside.name) / "gpu.cmake").write_text("find_package(CUDA REQUIRED)\n")
+        directory = self.package("a")
+        (directory / "cmake").symlink_to(outside.name, target_is_directory=True)
+        self.assertEqual(self.detect()[0], PLAIN)
+
+    def test_symlinked_manifest_outside_the_root_is_skipped(self) -> None:
+        outside = tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False)
+        self.addCleanup(os.unlink, outside.name)
+        outside.write('<package format="3"><name>a</name><depend>cuda_blackboard</depend></package>')
+        outside.close()
+        (self.root / "a").mkdir()
+        (self.root / "a" / "package.xml").symlink_to(outside.name)
+        stage, _, stderr = self.detect()
+        self.assertEqual(stage, PLAIN)
+        self.assertIn("points outside the source path", stderr)
 
     def test_vendored_code_two_levels_deep_is_not_read(self) -> None:
         directory = self.package("a", cmake="add_subdirectory(third_party/eigen)")

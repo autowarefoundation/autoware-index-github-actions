@@ -78,7 +78,8 @@ CMAKE_LIBRARY_SIGNALS = [
     ),
 ]
 
-ADD_SUBDIRECTORY = re.compile(r"\badd_subdirectory\s*\(\s*([^\s)]+)", _FLAGS)
+ADD_SUBDIRECTORY = re.compile(r"\badd_subdirectory\s*\(\s*(\"[^\"]*\"|[^\s)]+)", _FLAGS)
+BRACKET_OPEN = re.compile(r"\[(=*)\[")
 
 
 def printable(value: object) -> str:
@@ -142,8 +143,9 @@ def dependencies(directory: Path) -> set[str]:
 def split_cmake(text: str) -> tuple[str, str]:
     """Remove the comments from CMake code.
 
-    Returns the code two times: with the quoted arguments kept, and with
-    their contents removed. A `#` inside a quoted argument starts no comment.
+    Returns the code two times: with the quoted and bracket arguments kept,
+    and with their contents removed. A `#` inside such an argument starts no
+    comment.
     """
     with_strings: list[str] = []
     without_strings: list[str] = []
@@ -159,10 +161,16 @@ def split_cmake(text: str) -> tuple[str, str]:
             with_strings.append(text[index:end])
             without_strings.append('""')
             index = end
+        elif character == "[" and (bracket := BRACKET_OPEN.match(text, index)):
+            close = text.find(f"]{bracket.group(1)}]", bracket.end())
+            end = length if close < 0 else close + len(bracket.group(1)) + 2
+            with_strings.append(text[index:end])
+            without_strings.append('""')
+            index = end
         elif character == "#":
-            bracket = re.match(r"#\[(=*)\[", text[index:])
+            bracket = BRACKET_OPEN.match(text, index + 1)
             if bracket:
-                close = text.find(f"]{bracket.group(1)}]", index + bracket.end())
+                close = text.find(f"]{bracket.group(1)}]", bracket.end())
                 index = length if close < 0 else close + len(bracket.group(1)) + 2
             else:
                 newline = text.find("\n", index)
@@ -178,19 +186,22 @@ def cmake_files(directory: Path) -> list[Path]:
     """Return the CMake files that decide the image of the package in directory.
 
     These are its CMakeLists.txt, the CMakeLists.txt of each directory that
-    it adds with a literal add_subdirectory() call, and the .cmake files
-    under its cmake/ directory. The add_subdirectory() calls of the added
+    it adds with a literal add_subdirectory() call, the .cmake files beside
+    its CMakeLists.txt, and the .cmake files under its cmake/ directory
+    (in any letter case). The add_subdirectory() calls of the added
     directories are not followed: vendored code in deeper directories can
     use CUDA in its own tests without the package needing it.
     """
     top = directory / "CMakeLists.txt"
     files = [top]
     if top.is_file() and inside(top, directory):
-        _, code = split_cmake(top.read_text(errors="replace"))
+        code, _ = split_cmake(top.read_text(errors="replace"))
         for match in ADD_SUBDIRECTORY.finditer(code):
-            files.append(directory / match.group(1) / "CMakeLists.txt")
-    if (directory / "cmake").is_dir():
-        files.extend(sorted((directory / "cmake").rglob("*.cmake")))
+            files.append(directory / match.group(1).strip('"') / "CMakeLists.txt")
+    files.extend(sorted(directory.glob("*.cmake")))
+    for child in sorted(directory.iterdir()):
+        if child.name.lower() == "cmake" and child.is_dir():
+            files.extend(sorted(child.rglob("*.cmake")))
     return [path for path in dict.fromkeys(files) if path.is_file() and inside(path, directory)]
 
 
@@ -216,6 +227,7 @@ def detect(roots: list[Path], requested: list[str]) -> tuple[str, str]:
         warn(f"packages not found under the source paths: {printable(' '.join(missing))}")
     pending = [name for name in requested if name in packages] if requested else sorted(packages)
     if not pending:
+        warn("no package to read under the source paths, using the image without CUDA")
         return DEFAULT_IMAGE, "no package to read under the source paths"
     seen: set[str] = set()
     while pending:

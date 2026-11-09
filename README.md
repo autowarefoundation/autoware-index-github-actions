@@ -126,7 +126,7 @@ Direct invocation:
 <depend>autoware_cuda_dependency_meta</depend>
 ```
 
-This is the convention of Autoware for a package that uses CUDA, and it is the signal that cannot go wrong. The other signals below are a second net for packages that do not follow the convention.
+This is the convention of Autoware for a package that uses CUDA, and it does not depend on how the CMake code is written. The other signals below are a second net for packages that do not follow the convention.
 
 A package in the closure needs CUDA when one of these is true:
 
@@ -138,13 +138,14 @@ A package in the closure needs CUDA when one of these is true:
   - `cuda_add_library()` or `cuda_add_executable()`
   - `find_library()` or `find_path()` of `nvinfer`, `nvonnxparser`, `NvInfer.h`, `cudnn`, `cudart` or `cuda_runtime.h`
 
-The CMake files of a package are its `CMakeLists.txt`, the `CMakeLists.txt` of each directory that it adds with a literal `add_subdirectory()` call, and the `.cmake` files under its `cmake/` directory. The `add_subdirectory()` calls of an added directory are not followed. Vendored code in deeper directories can call `find_package(CUDA)` without the package needing it, for example the tests of a vendored Eigen. Comments and the contents of quoted strings are removed before the match, except for the library and header names.
+The CMake files of a package are its `CMakeLists.txt`, the `CMakeLists.txt` of each directory that it adds with a literal `add_subdirectory()` call, the `.cmake` files beside its `CMakeLists.txt`, and the `.cmake` files under its `cmake/` directory. The `add_subdirectory()` calls of an added directory are not followed. Vendored code in deeper directories can call `find_package(CUDA)` without the package needing it, for example the tests of a vendored Eigen. Comments and the contents of quoted strings and bracket arguments are removed before the match, except for the library and header names.
 
 Known limits:
 
 - The detection does not evaluate CMake. A `find_package(CUDA)` behind an option that is off, or without `REQUIRED`, still gives `core-devel-cuda`.
 - CUDA in a CMake file that is reached through a variable, through two levels of `add_subdirectory()`, or through `CONFIG_EXTRAS` is not found.
-- `condition=` attributes in `package.xml` are not evaluated.
+- `condition=` attributes in `package.xml` are not evaluated, so a dependency with a false condition still counts.
+- A `.cmake` file in another directory than the package directory and `cmake/` is not read.
 - `exec_depend` is no signal, because the image choice is about the build.
 
 If the detection is wrong for a repository, the caller of `validate-package.yaml` passes `base_image_stage`. The job summary of the `resolve` job shows the stage and the reason.
