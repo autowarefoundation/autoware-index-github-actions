@@ -11,9 +11,11 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 SCRIPT = (
@@ -145,6 +147,12 @@ class DetectTest(unittest.TestCase):
         stage, reason, _ = self.detect()
         self.assertEqual((stage, reason), (PLAIN, "no CUDA signal in 1 package(s): a"))
 
+    def test_package_in_a_directory_with_a_dot_name_is_no_package(self) -> None:
+        self.package("a")
+        self.package(".github/fixture", name="q", depends="<depend>cuda_blackboard</depend>")
+        stage, reason, _ = self.detect()
+        self.assertEqual((stage, reason), (PLAIN, "no CUDA signal in 1 package(s): a"))
+
     def test_package_at_the_source_root(self) -> None:
         self.package(".", name="a", cmake="find_package(CUDA REQUIRED)")
         self.assertEqual(self.detect("a")[0], CUDA)
@@ -240,6 +248,31 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(self.stage_of_cmake('set(X "#[[")\nfind_package(CUDA REQUIRED)\nset(Y "]]")'), CUDA)
         self.assertEqual(self.stage_of_cmake('set(X "a # b") find_package(CUDA)'), CUDA)
 
+    def test_escaped_quote_in_an_unquoted_argument_starts_no_string(self) -> None:
+        cases = [
+            'add_definitions(-DVERSION=\\"1.0\\")\nfind_package(CUDA REQUIRED)\nset(X "y")',
+            'add_compile_definitions(NAME=\\"${PROJECT_NAME}\\")\ncuda_add_library(a a.cu)\nset(X "y")',
+            'set(X \\# no comment) find_package(CUDA) set(Y "y")',
+        ]
+        for cmake in cases:
+            with self.subTest(cmake=cmake):
+                self.assertEqual(self.stage_of_cmake(cmake), CUDA)
+        self.assertEqual(self.stage_of_cmake('message(a\\"b "find_package(CUDA)")'), PLAIN)
+
+    def test_bracket_inside_an_unquoted_argument_starts_no_bracket_argument(self) -> None:
+        cases = [
+            "set(X a[[b)\nfind_package(CUDA REQUIRED)\nset(Y c]]d)",
+            "set(X ${LIST}[[)\nenable_language(CUDA)",
+            "set(X -DA=[=[)\nfind_package(TensorRT)\nset(Y ]=])",
+            # A form feed is no separator in CMake.
+            "set(X a\x0c[[)\nfind_package(CUDA REQUIRED)\nset(Y ]])",
+        ]
+        for cmake in cases:
+            with self.subTest(cmake=cmake):
+                self.assertEqual(self.stage_of_cmake(cmake), CUDA)
+        self.assertEqual(self.stage_of_cmake('message("a"[[find_package(CUDA)]])'), PLAIN)
+        self.assertEqual(self.stage_of_cmake("message(a [[find_package(CUDA)]])"), PLAIN)
+
     def test_cmake_files_in_the_cmake_directory_are_read(self) -> None:
         directory = self.package("a")
         (directory / "cmake" / "modules").mkdir(parents=True)
@@ -275,6 +308,21 @@ class DetectTest(unittest.TestCase):
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)
         (Path(outside.name) / "gpu.cmake").write_text("find_package(CUDA REQUIRED)\n")
+        directory = self.package("a")
+        (directory / "cmake").symlink_to(outside.name, target_is_directory=True)
+        self.assertEqual(self.detect()[0], PLAIN)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read every directory")
+    def test_symlink_to_a_directory_outside_the_package_is_not_walked(self) -> None:
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        # A directory that lists its files but refuses a stat of them: a
+        # walk that reaches gpu.cmake fails with PermissionError.
+        locked = Path(outside.name) / "locked"
+        locked.mkdir()
+        (locked / "gpu.cmake").write_text("find_package(CUDA REQUIRED)\n")
+        locked.chmod(0o444)
+        self.addCleanup(locked.chmod, 0o755)
         directory = self.package("a")
         (directory / "cmake").symlink_to(outside.name, target_is_directory=True)
         self.assertEqual(self.detect()[0], PLAIN)
@@ -323,6 +371,38 @@ class DetectTest(unittest.TestCase):
         result = self.run_script(f"--paths={self.root / 'nope'}")
         self.assertEqual(result.returncode, 1)
         self.assertIn("is not a directory", result.stderr)
+
+    # action.yaml
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "needs bash and jq")
+    def test_action_writes_the_outputs_and_the_job_summary(self) -> None:
+        action = SCRIPT.with_name("action.yaml").read_text()
+        lines = action.split("      run: |\n", 1)[1].splitlines(keepends=True)
+        # The block ends at the first line with less indentation.
+        end = next((i for i, line in enumerate(lines) if line.strip() and not line.startswith(" " * 8)), len(lines))
+        run_block = textwrap.dedent("".join(lines[:end]))
+        self.package("src/a", depends="<depend>cuda_blackboard</depend>")
+        environment = {
+            "PATH": os.environ["PATH"],
+            "SOURCE_PATHS": str(self.root / "src"),
+            "PACKAGES": "a",
+            "SCRIPT": str(SCRIPT),
+            "GITHUB_OUTPUT": str(self.root / "output"),
+            "GITHUB_STEP_SUMMARY": str(self.root / "summary"),
+        }
+        result = subprocess.run(
+            ["bash", "-c", run_block], env=environment, capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "::notice::base_image_stage=core-devel-cuda (a depends on cuda_blackboard)\n")
+        self.assertEqual(
+            (self.root / "output").read_text(),
+            "base_image_stage=core-devel-cuda\nreason=a depends on cuda_blackboard\n",
+        )
+        self.assertEqual(
+            (self.root / "summary").read_text(),
+            "### Base image stage: `core-devel-cuda`\n\nReason: a depends on cuda_blackboard\n",
+        )
 
 
 if __name__ == "__main__":
