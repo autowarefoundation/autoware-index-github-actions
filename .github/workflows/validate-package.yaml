@@ -13,6 +13,11 @@ name: validate-package
 # Container pin:
 #   ghcr.io/autowarefoundation/autoware:<base_image_stage>-<ros_distro>-<autoware_version>
 #
+# base_image_stage is optional. When unset (the default), the `resolve` job
+# reads the checked-out package and picks core-devel-cuda if the package or
+# a package it depends on in this repository needs CUDA, else core-devel.
+# See .github/actions/detect-base-image-stage/action.yaml.
+#
 # autoware_version is optional. When unset (the default), the `resolve`
 # job picks the version at runtime so caller CIs do not have to bump on
 # every Autoware release. See the autoware_version input docstring.
@@ -42,14 +47,20 @@ on:
         type: string
         default: ''
       package_name:
-        description: 'ROS package name; passed to colcon --packages-up-to.'
+        description: |
+          ROS package name. The build uses colcon
+          --packages-above-and-dependencies, and the test uses
+          --packages-above.
         required: true
         type: string
       base_image_stage:
-        description: 'Container image stage. Defaults to core-devel.'
+        description: |
+          Container image stage (e.g. "core-devel" or "core-devel-cuda").
+          When empty (the default), the detect-base-image-stage composite
+          action picks it from the package sources.
         required: false
         type: string
-        default: core-devel
+        default: ''
       runs-on:
         description: |
           Runner label as a JSON-encoded array (workaround for the lack
@@ -108,21 +119,43 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       autoware_version: ${{ inputs.autoware_version || steps.latest.outputs.autoware_version }}
+      base_image_stage: ${{ inputs.base_image_stage || steps.stage.outputs.base_image_stage }}
     steps:
+      - name: Check out repository
+        if: inputs.base_image_stage == ''
+        uses: actions/checkout@v7
+        with:
+          path: src/${{ github.event.repository.name }}
+
+      - name: Detect base image stage
+        id: stage
+        if: inputs.base_image_stage == ''
+        uses: autowarefoundation/autoware-index-github-actions/.github/actions/detect-base-image-stage@main
+        with:
+          # No package list: colcon-build also builds the packages above
+          # package_name, so every package of the repository counts.
+          paths: src/${{ github.event.repository.name }}
+
+      - name: Explain the override
+        if: inputs.base_image_stage == ''
+        shell: bash
+        run: |
+          echo "To use another image, pass \`base_image_stage\` to \`validate-package.yaml\`, for example \`base_image_stage: core-devel\`." >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Resolve latest autoware_version
         id: latest
         if: inputs.autoware_version == ''
         uses: autowarefoundation/autoware-index-github-actions/.github/actions/latest-autoware-version@main
         with:
           ros_distro: ${{ inputs.ros_distro }}
-          base_image_stage: ${{ inputs.base_image_stage }}
+          base_image_stage: ${{ inputs.base_image_stage || steps.stage.outputs.base_image_stage }}
 
   build-and-test:
     needs: resolve
     name: build+test (${{ inputs.ros_distro }}, autoware ${{ needs.resolve.outputs.autoware_version }})
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
-      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
+      image: ghcr.io/autowarefoundation/autoware:${{ needs.resolve.outputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -225,7 +258,7 @@ jobs:
     needs: [resolve, build-and-test]
     runs-on: ${{ fromJson(inputs.runs-on) }}
     container:
-      image: ghcr.io/autowarefoundation/autoware:${{ inputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
+      image: ghcr.io/autowarefoundation/autoware:${{ needs.resolve.outputs.base_image_stage }}-${{ inputs.ros_distro }}-${{ needs.resolve.outputs.autoware_version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7

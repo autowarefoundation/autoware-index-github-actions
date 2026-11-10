@@ -1,0 +1,65 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run the unit tests
+        run: python3 -m unittest discover -s tests -v
+
+  detect-base-image-stage:
+    name: detect-base-image-stage action
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create two small source trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fixtures/plain/a fixtures/cuda/a fixtures/cuda/b
+          echo '<package format="3"><name>a</name><depend>rclcpp</depend></package>' > fixtures/plain/a/package.xml
+          echo '<package format="3"><name>a</name><depend>b</depend></package>' > fixtures/cuda/a/package.xml
+          echo '<package format="3"><name>b</name><depend>autoware_cuda_dependency_meta</depend></package>' > fixtures/cuda/b/package.xml
+
+      - name: Detect on the tree without CUDA
+        id: plain
+        uses: ./.github/actions/detect-base-image-stage
+        with:
+          paths: fixtures/plain
+
+      - name: Detect on the tree with CUDA
+        id: cuda
+        uses: ./.github/actions/detect-base-image-stage
+        with:
+          paths: fixtures/cuda
+          packages: a missing_package
+
+      - name: Compare the outputs
+        shell: bash
+        env:
+          PLAIN_STAGE: ${{ steps.plain.outputs.base_image_stage }}
+          PLAIN_REASON: ${{ steps.plain.outputs.reason }}
+          CUDA_STAGE: ${{ steps.cuda.outputs.base_image_stage }}
+          CUDA_REASON: ${{ steps.cuda.outputs.reason }}
+        run: |
+          set -euo pipefail
+          test "${PLAIN_STAGE}" = "core-devel"
+          test "${PLAIN_REASON}" = "no CUDA signal in 1 package(s): a"
+          test "${CUDA_STAGE}" = "core-devel-cuda"
+          test "${CUDA_REASON}" = "b depends on autoware_cuda_dependency_meta"

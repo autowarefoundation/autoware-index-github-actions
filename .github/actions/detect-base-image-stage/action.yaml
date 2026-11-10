@@ -1,0 +1,60 @@
+name: Detect base image stage
+description: |
+  Return the Autoware container image stage that a set of ROS packages
+  needs: `core-devel-cuda` when a package in their dependency closure
+  needs CUDA, `core-devel` otherwise. The README of this repository lists
+  the signals. A package that needs the CUDA image declares
+  `<depend>autoware_cuda_dependency_meta</depend>` in its package.xml.
+
+inputs:
+  paths:
+    description: Source roots to search for package.xml files, separated by spaces or newlines.
+    required: true
+  packages:
+    description: |
+      Package names to start from, separated by spaces. The closure follows
+      the dependencies to other packages under `paths`. Empty means every
+      package under `paths`.
+      A name that is not found under
+      `paths` gets a warning and is left out.
+    required: false
+    default: ''
+
+outputs:
+  base_image_stage:
+    description: '`core-devel-cuda` or `core-devel`.'
+    value: ${{ steps.detect.outputs.base_image_stage }}
+  reason:
+    description: The package and the signal that decided the stage.
+    value: ${{ steps.detect.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        SOURCE_PATHS: ${{ inputs.paths }}
+        PACKAGES: ${{ inputs.packages }}
+        SCRIPT: ${{ github.action_path }}/detect_base_image_stage.py
+      run: |
+        set -euo pipefail
+        result=$(python3 -I "${SCRIPT}" --paths="${SOURCE_PATHS}" --packages="${PACKAGES}")
+        stage=$(jq -r .base_image_stage <<< "${result}")
+        reason=$(jq -r .reason <<< "${result}" | tr -s '[:space:]' ' ')
+        reason="${reason% }"
+        case "${stage}" in
+          core-devel | core-devel-cuda) ;;
+          *)
+            echo "::error::unexpected base_image_stage from the detection"
+            exit 1
+            ;;
+        esac
+        echo "::notice::base_image_stage=${stage} (${reason})"
+        echo "base_image_stage=${stage}" >> "${GITHUB_OUTPUT}"
+        echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
+        {
+          echo "### Base image stage: \`${stage}\`"
+          echo
+          echo "Reason: ${reason}"
+        } >> "${GITHUB_STEP_SUMMARY}"
