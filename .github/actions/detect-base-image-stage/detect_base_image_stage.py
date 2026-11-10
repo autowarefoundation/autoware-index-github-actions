@@ -103,14 +103,15 @@ def inside(path: Path, root: Path) -> bool:
 def find_packages(roots: list[Path]) -> dict[str, Path]:
     """Map package name to package directory, the way colcon finds packages.
 
-    A directory with an ignore marker is skipped with everything below it.
+    A directory with an ignore marker is skipped with everything below it,
+    and so is a directory below a source path whose name starts with a dot.
     The search does not go below a package, so a package.xml in a test
     fixture of a package is no package.
     """
     packages: dict[str, Path] = {}
     for root in roots:
         for current, directories, files in os.walk(root):
-            directories.sort()
+            directories[:] = sorted(name for name in directories if not name.startswith("."))
             if any(marker in files for marker in IGNORE_MARKERS):
                 directories.clear()
                 continue
@@ -145,15 +146,24 @@ def split_cmake(text: str) -> tuple[str, str]:
 
     Returns the code two times: with the quoted and bracket arguments kept,
     and with their contents removed. A `#` inside such an argument starts no
-    comment.
+    comment. An escape sequence outside a quoted argument is copied as it is,
+    so `\\"` starts no quoted argument.
     """
     with_strings: list[str] = []
     without_strings: list[str] = []
     index = 0
     length = len(text)
+    # The CMake lexer starts a bracket argument only at the start of an
+    # argument: `a[[b` is one unquoted argument.
+    in_unquoted = False
     while index < length:
         character = text[index]
-        if character == '"':
+        if character == "\\" and index + 1 < length and text[index + 1] != "\n":
+            with_strings.append(text[index : index + 2])
+            without_strings.append(text[index : index + 2])
+            index += 2
+            in_unquoted = True
+        elif character == '"':
             end = index + 1
             while end < length and text[end] != '"':
                 end += 2 if text[end] == "\\" else 1
@@ -161,13 +171,14 @@ def split_cmake(text: str) -> tuple[str, str]:
             with_strings.append(text[index:end])
             without_strings.append('""')
             index = end
-        elif character == "[" and (bracket := BRACKET_OPEN.match(text, index)):
+        elif character == "[" and not in_unquoted and (bracket := BRACKET_OPEN.match(text, index)):
             close = text.find(f"]{bracket.group(1)}]", bracket.end())
             end = length if close < 0 else close + len(bracket.group(1)) + 2
             with_strings.append(text[index:end])
             without_strings.append('""')
             index = end
         elif character == "#":
+            in_unquoted = False
             bracket = BRACKET_OPEN.match(text, index + 1)
             if bracket:
                 close = text.find(f"]{bracket.group(1)}]", bracket.end())
@@ -179,6 +190,7 @@ def split_cmake(text: str) -> tuple[str, str]:
             with_strings.append(character)
             without_strings.append(character)
             index += 1
+            in_unquoted = not (character.isspace() or character in "()")
     return "".join(with_strings), "".join(without_strings)
 
 
@@ -200,9 +212,14 @@ def cmake_files(directory: Path) -> list[Path]:
             files.append(directory / match.group(1).strip('"') / "CMakeLists.txt")
     files.extend(sorted(directory.glob("*.cmake")))
     for child in sorted(directory.iterdir()):
-        if child.name.lower() == "cmake" and child.is_dir():
-            files.extend(sorted(child.rglob("*.cmake")))
-    return [path for path in dict.fromkeys(files) if path.is_file() and inside(path, directory)]
+        if child.name.lower() == "cmake" and child.is_dir() and inside(child, directory):
+            # os.walk does not follow a directory symlink, so the walk stays below cmake/.
+            found = []
+            for current, _, names in os.walk(child):
+                found.extend(Path(current) / name for name in names if name.endswith(".cmake"))
+            files.extend(sorted(found))
+    # os.path.isfile returns False for a path that it cannot stat. Path.is_file raises.
+    return [path for path in dict.fromkeys(files) if os.path.isfile(path) and inside(path, directory)]
 
 
 def cmake_signal(directory: Path) -> str | None:

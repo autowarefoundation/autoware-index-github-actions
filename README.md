@@ -116,7 +116,7 @@ Direct invocation:
 
 ## `detect-base-image-stage` (composite action)
 
-`.github/actions/detect-base-image-stage/action.yaml` returns the image stage that a set of packages needs. It finds the packages under the source paths the way colcon does: a directory with a `COLCON_IGNORE`, `AMENT_IGNORE` or `CATKIN_IGNORE` file is skipped, and a `package.xml` below another package is no package. It starts from the requested packages and follows their dependencies to the other packages under the same paths. A requested package that is not found gets a warning, and the other packages decide. The build that follows reports the absent package.
+`.github/actions/detect-base-image-stage/action.yaml` returns the image stage that a set of packages needs. It finds the packages under the source paths the way colcon does: a directory with a `COLCON_IGNORE`, `AMENT_IGNORE` or `CATKIN_IGNORE` file is skipped, a directory whose name starts with a dot is skipped, and a `package.xml` below another package is no package. It starts from the requested packages and follows their dependencies to the other packages under the same paths. A requested package that is not found gets a warning, and the other packages decide. The build that follows reports the absent package.
 
 `validate-package.yaml` passes no package list, so every package of the repository counts. The reason is that `colcon-build` also builds the packages above `package_name`. In a repository with one CUDA package, every package therefore builds in `core-devel-cuda`.
 
@@ -138,7 +138,7 @@ A package in the closure needs CUDA when one of these is true:
   - `cuda_add_library()` or `cuda_add_executable()`
   - `find_library()` or `find_path()` of `nvinfer`, `nvonnxparser`, `NvInfer.h`, `cudnn`, `cudart` or `cuda_runtime.h`
 
-The CMake files of a package are its `CMakeLists.txt`, the `CMakeLists.txt` of each directory that it adds with a literal `add_subdirectory()` call, the `.cmake` files beside its `CMakeLists.txt`, and the `.cmake` files under its `cmake/` directory. The `add_subdirectory()` calls of an added directory are not followed. Vendored code in deeper directories can call `find_package(CUDA)` without the package needing it, for example the tests of a vendored Eigen. Comments and the contents of quoted strings and bracket arguments are removed before the match, except for the library and header names.
+The CMake files of a package are its `CMakeLists.txt`, the `CMakeLists.txt` of each directory that it adds with a literal `add_subdirectory()` call, the `.cmake` files beside its `CMakeLists.txt`, and the `.cmake` files under its `cmake/` directory. A symlink to a directory is not followed below `cmake/`, and a `cmake/` symlink that points outside the package is not read. The `add_subdirectory()` calls of an added directory are not followed. Vendored code in deeper directories can call `find_package(CUDA)` without the package needing it, for example the tests of a vendored Eigen. Comments and the contents of quoted strings and bracket arguments are removed before the match, except for the library and header names.
 
 Known limits:
 
