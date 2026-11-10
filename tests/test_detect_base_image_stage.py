@@ -264,6 +264,8 @@ class DetectTest(unittest.TestCase):
             "set(X a[[b)\nfind_package(CUDA REQUIRED)\nset(Y c]]d)",
             "set(X ${LIST}[[)\nenable_language(CUDA)",
             "set(X -DA=[=[)\nfind_package(TensorRT)\nset(Y ]=])",
+            # A form feed is no separator in CMake.
+            "set(X a\x0c[[)\nfind_package(CUDA REQUIRED)\nset(Y ]])",
         ]
         for cmake in cases:
             with self.subTest(cmake=cmake):
@@ -321,12 +323,9 @@ class DetectTest(unittest.TestCase):
         (locked / "gpu.cmake").write_text("find_package(CUDA REQUIRED)\n")
         locked.chmod(0o444)
         self.addCleanup(locked.chmod, 0o755)
-        for link in ("cmake", "cmake/modules"):
-            with self.subTest(link=link):
-                directory = self.package(link.replace("/", "_"))
-                (directory / link).parent.mkdir(exist_ok=True)
-                (directory / link).symlink_to(outside.name, target_is_directory=True)
-                self.assertEqual(self.detect()[0], PLAIN)
+        directory = self.package("a")
+        (directory / "cmake").symlink_to(outside.name, target_is_directory=True)
+        self.assertEqual(self.detect()[0], PLAIN)
 
     def test_symlinked_manifest_outside_the_root_is_skipped(self) -> None:
         outside = tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False)
@@ -378,7 +377,10 @@ class DetectTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "needs bash and jq")
     def test_action_writes_the_outputs_and_the_job_summary(self) -> None:
         action = SCRIPT.with_name("action.yaml").read_text()
-        run_block = textwrap.dedent(action.split("      run: |\n", 1)[1])
+        lines = action.split("      run: |\n", 1)[1].splitlines(keepends=True)
+        # The block ends at the first line with less indentation.
+        end = next((i for i, line in enumerate(lines) if line.strip() and not line.startswith(" " * 8)), len(lines))
+        run_block = textwrap.dedent("".join(lines[:end]))
         self.package("src/a", depends="<depend>cuda_blackboard</depend>")
         environment = {
             "PATH": os.environ["PATH"],

@@ -190,7 +190,8 @@ def split_cmake(text: str) -> tuple[str, str]:
             with_strings.append(character)
             without_strings.append(character)
             index += 1
-            in_unquoted = not (character.isspace() or character in "()")
+            # CMake separates arguments only with these characters.
+            in_unquoted = character not in " \t\r\n()"
     return "".join(with_strings), "".join(without_strings)
 
 
